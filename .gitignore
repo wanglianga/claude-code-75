@@ -1,0 +1,41 @@
+# Dependencies and generated builds
+node_modules/
+web/node_modules/
+server/node_modules/
+web/dist/
+dist/
+build/
+target/
+coverage/
+.cache/
+
+# Local runtime state
+.env
+.env.*
+!.env.example
+server/data/
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.tmp
+
+# Local assistant and QA artifacts
+.claude/
+.playwright-cli/
+playwright-report/
+test-results/
+traces/
+*_traces/
+memory/
+memories/
+skill/
+skills/
+
+# Credentials
+*.pem
+*.key
+*secret*
+*token*
+*credential*

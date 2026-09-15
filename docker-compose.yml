@@ -1,0 +1,25 @@
+# 社区康复中心 · 器械预约与训练风险提示系统
+# 应用为单服务（前端静态资源 + 后端 API + 内嵌 SQLite），无需对外发布其他端口。
+services:
+  app:
+    build: .
+    image: rehab-center-app:latest
+    environment:
+      - PORT=8080
+      - DATA_DIR=/app/data
+      - TZ=Asia/Shanghai
+    ports:
+      # 仅发布应用服务端口到宿主；宿主机端口由 CC_PUBLISH_PORT 指定
+      - "${CC_PUBLISH_PORT:-8080}:8080"
+    volumes:
+      - rehab-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  rehab-data:
