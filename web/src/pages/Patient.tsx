@@ -5,6 +5,7 @@ import type { Appointment } from '../types';
 import { APPT_STATUS, PLAN_STATUS, todayStr, fmtDT } from '../labels';
 import { Tabs, Section, StatusPill, Pill, RiskBadge, Modal, Field, Empty, Timeline } from '../components/ui';
 import { PainEscalationNotice, RiskTags } from '../components/Pain';
+import { InsuranceWarnPanel, useOpenConfirmation } from '../components/Insurance';
 
 export default function PatientPage() {
   const [tab, setTab] = useState('appts');
@@ -50,25 +51,29 @@ function MyAppointments() {
   const [cancelAppt, setCancelAppt] = useState<Appointment | null>(null);
   const [reason, setReason] = useState('');
   const call = useStore((s) => s.call);
+  const openConf = useOpenConfirmation(me?.id);
   const list = useMemo(() => (data?.appointments || [])
     .filter((a) => a.patientId === me?.id)
     .sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start)), [data, me]);
   if (!me) return null;
-  const upcoming = list.filter((a) => ['scheduled', 'arrived'].includes(a.status) && a.date >= todayStr());
+  const upcoming = list.filter((a) => ['scheduled', 'arrived', 'pending_reconfirm'].includes(a.status) && a.date >= todayStr());
   const history = list.filter((a) => !upcoming.includes(a));
   return (
     <Section title="我的预约">
       <PainEscalationNotice patientId={me.id} />
+      {openConf && <InsuranceWarnPanel c={openConf} />}
       <b>待训练</b>
       {upcoming.length === 0 ? <Empty>暂无待训练预约，请联系前台预约</Empty> : (
         <table className="table mt4">
-          <thead><tr><th>日期时间</th><th>器械</th><th>治疗师</th><th>时长</th><th>状态</th><th></th></tr></thead>
+          <thead><tr><th>日期时间</th><th>器械</th><th>治疗师</th><th>时长</th><th>费用</th><th>状态</th><th></th></tr></thead>
           <tbody>
             {upcoming.map((a) => (
               <tr key={a.id}>
                 <td>{a.date} {a.start}</td><td>{a.equipmentName}</td><td>{a.therapistName}</td>
-                <td>{a.duration}分钟</td><td><StatusPill dict={APPT_STATUS} value={a.status} /></td>
-                <td><button className="btn btn-sm" onClick={() => setCancelAppt(a)}>取消</button></td>
+                <td>{a.duration}分钟</td>
+                <td>{a.payType === 'self_pay' ? <Pill tone="purple">自费</Pill> : <Pill tone="blue">医保</Pill>}</td>
+                <td><StatusPill dict={APPT_STATUS} value={a.status} /></td>
+                <td>{a.status !== 'pending_reconfirm' && <button className="btn btn-sm" onClick={() => setCancelAppt(a)}>取消</button>}</td>
               </tr>
             ))}
           </tbody>
@@ -117,6 +122,13 @@ function MyPlan() {
         <div className="plan-node plan-active">
           <div className="plan-node-head"><b>当前计划 v{active.version}</b><StatusPill dict={PLAN_STATUS} value={active.status} /></div>
           <div className="plan-goals">目标：{active.goals}</div>
+          <div className="kv-grid">
+            {active.rom && <div><span className="muted">动作范围：</span>{active.rom}</div>}
+            {active.estimatedSessions && <div><span className="muted">预计疗程：</span>{active.estimatedSessions} 次</div>}
+          </div>
+          {active.patientReminder && (
+            <div className="note-box mt4"><b>动作提醒：</b>{active.patientReminder}</div>
+          )}
           <table className="table mt4">
             <thead><tr><th>器械类型</th><th>频次</th><th>单次时长</th><th>强度</th></tr></thead>
             <tbody>{active.items.map((it, i) => <tr key={i}><td>{it.equipmentType}</td><td>{it.freqPerWeek} 次/周</td><td>{it.duration} 分钟</td><td>{it.intensity}</td></tr>)}</tbody>

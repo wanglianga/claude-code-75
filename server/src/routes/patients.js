@@ -84,10 +84,11 @@ router.post('/:id/plans', requireRole('therapist', 'frontdesk'), (req, res) => {
   if (prev) db.prepare("UPDATE plans SET status='superseded' WHERE id=?").run(prev.id);
   const id = uid();
   const kindLabel = { doctor: '医生调整方案', therapist: '治疗师阶段调整', referral: '转诊后新方案', resume: '恢复训练' }[kind] || '方案调整';
-  db.prepare(`INSERT INTO plans(id,patient_id,version,status,goals,items,note,previous_plan_id,created_by,created_at)
-    VALUES(?,?,?,'active',?,?,?,?,?,?)`).run(
+  db.prepare(`INSERT INTO plans(id,patient_id,version,status,goals,items,note,rom,estimated_sessions,patient_reminder,previous_plan_id,created_by,created_at)
+    VALUES(?,?,?,'active',?,?,?,?,?,?,?,?,?,?)`).run(
     id, patient.id, version, goals || (prev ? prev.goals : ''), JSON.stringify(items || []),
-    note || '', prev ? prev.id : null, req.user.name, nowIso(),
+    note || '', prev ? prev.rom : '', prev ? prev.estimated_sessions : null, prev ? prev.patient_reminder : '',
+    prev ? prev.id : null, req.user.name, nowIso(),
   );
   if (patient.status !== 'active') db.prepare("UPDATE patients SET status='active' WHERE id=?").run(patient.id);
   const done = db.prepare("SELECT COUNT(*) c FROM appointments WHERE patient_id=? AND status='completed'").get(patient.id).c;

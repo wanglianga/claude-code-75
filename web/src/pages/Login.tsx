@@ -3,15 +3,17 @@ import { useStore } from '../store';
 
 const DEMO_ACCOUNTS: [string, string][] = [
   ['frontdesk', '前台 · 周婷'],
+  ['doctor', '医生 · 李医生（康复医师）'],
   ['therapist1', '治疗师 · 王敏（术后/老年）'],
   ['therapist2', '治疗师 · 李强（慢病）'],
   ['therapist3', '治疗师 · 陈雪（儿童）'],
   ['patient1', '患者 · 张伟（术后）'],
-  ['patient2', '患者 · 刘芳（慢病）'],
+  ['patient2', '患者 · 刘芳（慢病·医保余2次）'],
   ['patient3', '患者 · 陈桂香（老年·高风险）'],
   ['family1', '家属 · 张强'],
   ['family2', '家属 · 李母（儿童）'],
   ['family3', '家属 · 陈燕（高风险患者之女）'],
+  ['family4', '家属 · 刘军（刘芳之子）'],
   ['maint', '设备维护 · 赵建国'],
 ];
 

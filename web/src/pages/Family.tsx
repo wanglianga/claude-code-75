@@ -1,19 +1,27 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { api } from '../api';
-import { APPT_STATUS, PLAN_STATUS, todayStr, fmtDT } from '../labels';
-import { Tabs, Section, StatusPill, Pill, RiskBadge, Field, Empty, Timeline, KV } from '../components/ui';
+import type { InsuranceConfirmation } from '../types';
+import { APPT_STATUS, BILLING_STATUS, PLAN_STATUS, todayStr, fmtDT } from '../labels';
+import { Tabs, Section, StatusPill, Pill, RiskBadge, Modal, Field, Empty, Timeline, KV } from '../components/ui';
 import { EventBoard } from '../components/Events';
 import { PainEscalationNotice, RiskTags } from '../components/Pain';
+import { ConfirmationDetail } from '../components/Insurance';
 
 export default function FamilyPage() {
   const [tab, setTab] = useState('overview');
+  const data = useStore((s) => s.data);
+  const pendingConfirm = (data?.confirmations || []).filter((c) => c.status === 'pending_family').length;
   return (
     <div>
       <Tabs active={tab} onChange={setTab} items={[
-        ['overview', '患者概况'], ['appts', '预约与知情确认'], ['request', '请求与协同'],
+        ['overview', '患者概况'],
+        ['insurance', `医保确认${pendingConfirm ? `（${pendingConfirm}）` : ''}`],
+        ['appts', '预约与知情确认'],
+        ['request', '请求与协同'],
       ]} />
       {tab === 'overview' && <Overview />}
+      {tab === 'insurance' && <InsurancePanel />}
       {tab === 'appts' && <ApptsConsent />}
       {tab === 'request' && <RequestPanel />}
     </div>
@@ -24,6 +32,113 @@ function useLinked() {
   const { data, user } = useStore();
   const patient = data?.patients.find((p) => p.id === user?.patientId);
   return { data, patient };
+}
+
+/* ---------------- 医保确认：剩余次数/自费价格/医生建议 → 家属确认或拒绝 ---------------- */
+function InsurancePanel() {
+  const { data, patient } = useLinked();
+  const { user, call } = useStore();
+  const [confirmTarget, setConfirmTarget] = useState<InsuranceConfirmation | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<InsuranceConfirmation | null>(null);
+  const [confirmer, setConfirmer] = useState('');
+  const [sessions, setSessions] = useState('10');
+  const [pauseReason, setPauseReason] = useState('');
+  if (!patient || !data || !user) return null;
+  const list = (data.confirmations || []).filter((c) => c.patientId === patient.id);
+  const pending = list.filter((c) => ['pending_advice', 'pending_family'].includes(c.status));
+  const history = list.filter((c) => !pending.includes(c));
+  const billing = (data.billing || []).filter((b) => b.patientId === patient.id);
+
+  return (
+    <div>
+      <Section title="医保次数不足 · 家属确认（确认结果同步前台收费与治疗师计划）">
+        {pending.length === 0 && <Empty>当前无待确认的医保提醒</Empty>}
+        {pending.map((c) => (
+          <div key={c.id} className="ins-conf-card ins-conf-pending">
+            <div className="row-between">
+              <b>医保「{c.insuranceItem}」仅剩 {c.remaining} 次，即将用尽</b>
+              <StatusPill dict={{ pending_advice: ['待医生续开建议', 'amber'], pending_family: ['待家属确认', 'blue'] }} value={c.status} />
+            </div>
+            <div className="kv-grid mt4">
+              <KV k="剩余次数"><b>{c.remaining} 次</b></KV>
+              <KV k="自费价格"><b>¥{c.selfPayPrice}/次</b></KV>
+              <KV k="医生续开建议">{c.doctorAdvice || '待医生填写，填写后您可确认'}</KV>
+            </div>
+            {c.status === 'pending_family' && (
+              <div className="row-actions mt8">
+                <button className="btn btn-primary" onClick={() => { setConfirmTarget(c); setConfirmer(user.name); setSessions('10'); }}>确认自费继续训练</button>
+                <button className="btn btn-danger" onClick={() => { setRejectTarget(c); setPauseReason(''); }}>不同意自费（暂停训练）</button>
+              </div>
+            )}
+            {c.status === 'pending_advice' && <div className="muted mt4">医生续开建议出具后，即可在此确认是否自费继续。</div>}
+          </div>
+        ))}
+      </Section>
+
+      {history.length > 0 && (
+        <Section title="确认记录（确认人/金额/治疗师说明留痕，收费争议可追溯）">
+          {history.map((c) => <ConfirmationDetail key={c.id} c={c} />)}
+        </Section>
+      )}
+
+      {billing.length > 0 && (
+        <Section title="我的账单">
+          <table className="table">
+            <thead><tr><th>项目</th><th>次数</th><th>金额</th><th>状态</th><th>确认人</th><th>治疗师说明</th><th>时间</th></tr></thead>
+            <tbody>
+              {billing.map((b) => (
+                <tr key={b.id}>
+                  <td>{b.item}</td><td>{b.sessions} 次</td><td>¥{b.amount}</td>
+                  <td><StatusPill dict={BILLING_STATUS} value={b.status} /></td>
+                  <td>{b.confirmerName || '—'}</td>
+                  <td className="cell-note">{b.therapistNote || '—'}</td>
+                  <td>{fmtDT(b.createdAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      )}
+
+      {confirmTarget && (
+        <Modal title={`确认自费继续训练 · 「${confirmTarget.insuranceItem}」`} onClose={() => setConfirmTarget(null)}>
+          <div className="note-box">
+            自费 ¥{confirmTarget.selfPayPrice}/次。确认后：① 生成前台收费记录；② 同步治疗师训练计划；③ 保留确认人/金额/治疗师说明，收费争议可追溯。
+          </div>
+          <div className="grid2">
+            <Field label="确认人"><input value={confirmer} onChange={(e) => setConfirmer(e.target.value)} /></Field>
+            <Field label="购买次数">
+              <select value={sessions} onChange={(e) => setSessions(e.target.value)}>
+                {['5', '10', '15', '20'].map((n) => <option key={n} value={n}>{n} 次</option>)}
+              </select>
+            </Field>
+          </div>
+          <div className="confirm-bar">
+            <span>应付金额：<b>¥{(Number(sessions) || 0) * confirmTarget.selfPayPrice}</b>（{sessions} 次 × ¥{confirmTarget.selfPayPrice}）</span>
+            <button className="btn btn-primary" disabled={!confirmer.trim()} onClick={async () => {
+              if (await call(() => api(`/insurance/confirmations/${confirmTarget.id}/confirm`, { body: { confirmerName: confirmer, sessions: Number(sessions) } }), '已确认自费继续训练，已同步前台收费与治疗师计划')) setConfirmTarget(null);
+            }}>确认自费</button>
+          </div>
+        </Modal>
+      )}
+      {rejectTarget && (
+        <Modal title={`不同意自费 · 「${rejectTarget.insuranceItem}」`} onClose={() => setRejectTarget(null)}>
+          <div className="alert-list tone-amber">
+            <div>⚠ 不同意自费后训练将暂停，暂停原因会保留并同步给医生，医生将评估是否需要重开项目。</div>
+          </div>
+          <Field label="暂停训练原因（必填，将保留并同步医生端）">
+            <textarea rows={3} value={pauseReason} onChange={(e) => setPauseReason(e.target.value)} placeholder="如：自费费用较高，家庭经济困难，暂停训练" />
+          </Field>
+          <div className="row-actions">
+            <button className="btn btn-danger" disabled={!pauseReason.trim()} onClick={async () => {
+              if (await call(() => api(`/insurance/confirmations/${rejectTarget.id}/reject`, { body: { pauseReason } }), '已记录：训练暂停，原因已同步医生评估')) setRejectTarget(null);
+            }}>确认不同意自费</button>
+            <button className="btn" onClick={() => setRejectTarget(null)}>再考虑一下</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
 }
 
 function Overview() {
@@ -75,7 +190,7 @@ function ApptsConsent() {
     .filter((a) => a.patientId === patient?.id)
     .sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start)), [data, patient]);
   if (!patient) return null;
-  const upcoming = list.filter((a) => ['scheduled', 'arrived'].includes(a.status) && a.date >= todayStr());
+  const upcoming = list.filter((a) => ['scheduled', 'arrived', 'pending_reconfirm'].includes(a.status) && a.date >= todayStr());
   const plans = (data?.plans || []).filter((p) => p.patientId === patient.id).sort((a, b) => b.version - a.version);
   return (
     <Section title="预约与知情确认（高风险患者训练前需家属知情）">

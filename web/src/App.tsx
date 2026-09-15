@@ -6,6 +6,7 @@ import Therapist from './pages/Therapist';
 import PatientPage from './pages/Patient';
 import FamilyPage from './pages/Family';
 import MaintenancePage from './pages/Maintenance';
+import DoctorPage from './pages/Doctor';
 import { Pill } from './components/ui';
 
 const ROLE_HOME: Record<string, () => JSX.Element> = {
@@ -14,6 +15,7 @@ const ROLE_HOME: Record<string, () => JSX.Element> = {
   patient: PatientPage,
   family: FamilyPage,
   maintenance: MaintenancePage,
+  doctor: DoctorPage,
 };
 
 export default function App() {

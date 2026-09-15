@@ -1,5 +1,8 @@
-import db, { mapPatient, mapAppointment, mapEscalation } from './db.js';
+import db, { mapPatient, mapAppointment, mapEscalation, J } from './db.js';
 import { uid, nowIso } from './util.js';
+
+/** 医保剩余次数 ≤ 该阈值时触发「次数不足」确认流 */
+export const INSURANCE_WARN_THRESHOLD = 2;
 
 export function addStep(eventId, user, action, note = '') {
   db.prepare('INSERT INTO event_steps(id,event_id,user_id,role,user_name,action,note,created_at) VALUES(?,?,?,?,?,?,?,?)')
@@ -58,7 +61,6 @@ export function autoStepForAppointment(appointmentId, types, user, action, note)
 }
 
 /* ---------------- 疼痛升级 ---------------- */
-
 export function getEscalationRow(id) {
   return db.prepare('SELECT * FROM pain_escalations WHERE id=?').get(id);
 }
@@ -80,4 +82,77 @@ export function getEscalationsWithNames(where = '', params = []) {
     JOIN appointments a ON a.id=pe.appointment_id
     LEFT JOIN equipment e ON e.id=a.equipment_id
     ${where} ORDER BY pe.created_at DESC`).all(...params).map(mapEscalation);
+}
+
+/* ---------------- 医保次数不足确认流 ---------------- */
+
+export function getConfirmationRow(id) {
+  return db.prepare('SELECT * FROM insurance_confirmations WHERE id=?').get(id);
+}
+
+/** 患者某医保项目当前未闭环的确认单（待医生建议/待家属确认） */
+export function openConfirmationOf(patientId, itemName) {
+  return db.prepare(`SELECT * FROM insurance_confirmations
+    WHERE patient_id=? AND insurance_item=? AND status IN ('pending_advice','pending_family')
+    ORDER BY created_at DESC LIMIT 1`).get(patientId, itemName);
+}
+
+/** 患者医保项目自费额度（家属确认后可用）：返回 { item, remaining, selfPayRemaining } */
+export function selfPayInfoOf(patient) {
+  const item = (patient.insuranceItems || [])[0];
+  if (!item) return { item: null, remaining: 0, selfPayRemaining: 0 };
+  const remaining = Math.max(0, (item.total || 0) - (item.used || 0));
+  const selfPayRemaining = Math.max(0, (item.selfPayTotal || 0) - (item.selfPayUsed || 0));
+  return { item, remaining, selfPayRemaining };
+}
+
+/**
+ * 预约/核销时检查：医保剩余 ≤ 阈值则确保存在一张未闭环确认单（待医生续开建议），
+ * 并生成/复用协同事件。返回确认单行（未触发返回 null）。
+ * 已有自费额度（家属已确认）或最近一张被拒绝待医生重开时，不重复创建。
+ */
+export function ensureInsuranceConfirmation(patientId, user = null) {
+  const patient = getPatient(patientId);
+  if (!patient) return null;
+  const { item, remaining, selfPayRemaining } = selfPayInfoOf(patient);
+  if (!item || remaining > INSURANCE_WARN_THRESHOLD) return null;
+  if (selfPayRemaining > 0) return null;
+  const open = openConfirmationOf(patientId, item.name);
+  if (open) return open;
+  const last = db.prepare(`SELECT * FROM insurance_confirmations WHERE patient_id=? AND insurance_item=?
+    ORDER BY created_at DESC LIMIT 1`).get(patientId, item.name);
+  if (last && last.status === 'rejected') return null;
+  const id = uid();
+  const price = item.selfPayPrice ?? 80;
+  const eventId = createEvent({
+    patientId, type: 'insurance_shortage',
+    title: `${patient.name} 医保「${item.name}」仅剩 ${remaining} 次，待医生续开建议与家属确认`,
+    detail: {
+      confirmationId: id, item: item.name, remaining, selfPayPrice: price,
+      note: `医保康复次数即将用尽（剩余 ${remaining} 次）：请医生填写续开建议，家属确认是否自费继续训练（自费 ¥${price}/次）`,
+    },
+    user,
+  });
+  db.prepare(`INSERT INTO insurance_confirmations(id,patient_id,insurance_item,remaining,self_pay_price,status,event_id,created_at)
+    VALUES(?,?,?,?,?,'pending_advice',?,?)`).run(id, patientId, item.name, remaining, price, eventId, nowIso());
+  return getConfirmationRow(id);
+}
+
+/* ---------------- 计划重新确认（器械变更） ---------------- */
+
+export function getReconfirmationRow(id) {
+  return db.prepare('SELECT * FROM plan_reconfirmations WHERE id=?').get(id);
+}
+
+/** 某预约是否存在待治疗师重新确认的记录 */
+export function pendingReconfirmationOf(appointmentId) {
+  return db.prepare("SELECT * FROM plan_reconfirmations WHERE appointment_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1")
+    .get(appointmentId);
+}
+
+/* ---------------- 维修工单 ---------------- */
+
+export function openOrderOfEquipment(equipmentId) {
+  return db.prepare("SELECT * FROM maintenance_orders WHERE equipment_id=? AND status!='resolved' ORDER BY created_at DESC LIMIT 1")
+    .get(equipmentId);
 }

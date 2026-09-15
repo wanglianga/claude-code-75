@@ -2,28 +2,68 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { api } from '../api';
 import type { Appointment, InsuranceItem } from '../types';
-import { APPT_STATUS, EQUIP_STATUS, PATIENT_STATUS, todayStr } from '../labels';
+import { APPT_STATUS, BILLING_STATUS, CONFIRM_STATUS, EQUIP_STATUS, PATIENT_STATUS, todayStr, fmtDT } from '../labels';
 import { Tabs, Section, StatusPill, Pill, RiskBadge, Modal, Field, Empty } from '../components/ui';
 import { BookingWizard } from '../components/BookingWizard';
 import { EventBoard } from '../components/Events';
 import { PatientDetail } from '../components/PatientDetail';
 import { RiskTags, usePendingHandover } from '../components/Pain';
+import { EquipImpactModal } from '../components/EquipImpact';
 
 export default function FrontDesk() {
   const [tab, setTab] = useState('today');
   const intent = useStore((s) => s.bookingIntent);
+  const unpaid = (useStore((s) => s.data)?.billing || []).filter((b) => b.status === 'unpaid').length;
   useEffect(() => { if (intent) setTab('booking'); }, [intent]);
   return (
     <div>
       <Tabs active={tab} onChange={setTab} items={[
-        ['today', '今日日程'], ['booking', '预约训练'], ['patients', '患者建档'], ['events', '协同事件'], ['equip', '器械与医保'],
+        ['today', '今日日程'], ['booking', '预约训练'], ['patients', '患者建档'],
+        ['billing', `收费管理${unpaid ? `（${unpaid}）` : ''}`], ['events', '协同事件'], ['equip', '器械与医保'],
       ]} />
       {tab === 'today' && <TodayPanel />}
       {tab === 'booking' && <BookingWizard />}
       {tab === 'patients' && <IntakePanel />}
+      {tab === 'billing' && <BillingPanel />}
       {tab === 'events' && <EventBoard />}
       {tab === 'equip' && <EquipInsurancePanel />}
     </div>
+  );
+}
+
+/* ---------------- 收费管理（自费确认同步至此，确认人/金额/治疗师说明可追溯） ---------------- */
+function BillingPanel() {
+  const { data, call } = useStore();
+  if (!data) return null;
+  const list = [...(data.billing || [])].sort((a, b) => (a.status === b.status ? b.createdAt.localeCompare(a.createdAt) : a.status === 'unpaid' ? -1 : 1));
+  return (
+    <Section title="收费管理（家属自费确认同步生成，留痕可追溯收费争议）">
+      {list.length === 0 ? <Empty>暂无收费记录</Empty> : (
+        <table className="table">
+          <thead><tr><th>患者</th><th>项目</th><th>次数</th><th>金额</th><th>状态</th><th>确认人</th><th>治疗师说明</th><th>时间</th><th>操作</th></tr></thead>
+          <tbody>
+            {list.map((b) => (
+              <tr key={b.id}>
+                <td><b>{b.patientName}</b></td>
+                <td>{b.item}</td>
+                <td>{b.sessions} 次</td>
+                <td><b>¥{b.amount}</b></td>
+                <td><StatusPill dict={BILLING_STATUS} value={b.status} /></td>
+                <td>{b.confirmerName || '—'}</td>
+                <td className="cell-note">{b.therapistNote || <span className="muted">待治疗师补充</span>}</td>
+                <td>{fmtDT(b.createdAt)}{b.paidAt && <div className="muted">收讫 {fmtDT(b.paidAt)}</div>}</td>
+                <td>
+                  {b.status === 'unpaid'
+                    ? <button className="btn btn-sm btn-primary" onClick={() => call(() => api(`/insurance/billing/${b.id}/pay`, { body: {} }), '已确认收费')}>标记已收费</button>
+                    : <Pill tone="green">已收讫</Pill>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="muted mt8">说明：家属在「医保确认」中确认自费后自动生成待收费记录；确认人、金额、治疗师说明均留痕，收费争议可追溯。</div>
+    </Section>
   );
 }
 
@@ -241,49 +281,72 @@ function IntakePanel() {
 function EquipInsurancePanel() {
   const { data, call } = useStore();
   const [faultTarget, setFaultTarget] = useState<string | null>(null);
+  const [faultType, setFaultType] = useState('阻力异常');
   const [faultNote, setFaultNote] = useState('');
+  const [impactId, setImpactId] = useState<string | null>(null);
   if (!data) return null;
+  const confByPatient = (pid: string) => (data.confirmations || []).find((c) => c.patientId === pid
+    && ['pending_advice', 'pending_family'].includes(c.status));
   return (
     <div className="grid2col">
-      <Section title="器械状态（故障上报后自动生成协同事件）">
+      <Section title="器械状态（故障上报后自动生成工单与协同事件；点击「影响分析」查看受影响预约/替代器械/工单/消毒状态）">
         <div className="equip-grid">
           {data.equipment.map((eq) => (
             <div key={eq.id} className="equip-card">
               <div className="equip-head"><b>{eq.name}</b><StatusPill dict={EQUIP_STATUS} value={eq.status} /></div>
-              <div className="muted">{eq.type} · 适用：{eq.suitableCategories.map((c) => <CatLabel key={c} k={c} />).reduce((a: React.ReactNode[], b, i) => (i ? [...a, '、', b] : [b]), [] as React.ReactNode[])}</div>
+              <div className="muted">{eq.type} · {eq.effectDesc || '—'} · 适用：{eq.suitableCategories.map((c) => <CatLabel key={c} k={c} />).reduce((a: React.ReactNode[], b, i) => (i ? [...a, '、', b] : [b]), [] as React.ReactNode[])}</div>
               {eq.note && <div className="note-box">{eq.note}</div>}
-              {eq.status !== 'fault' && (
-                <button className="btn btn-sm btn-warn" onClick={() => setFaultTarget(eq.id)}>上报故障</button>
-              )}
+              <div className="row-actions">
+                <button className="btn btn-sm" onClick={() => setImpactId(eq.id)}>影响分析</button>
+                {eq.status !== 'fault' && (
+                  <button className="btn btn-sm btn-warn" onClick={() => { setFaultTarget(eq.id); setFaultType('阻力异常'); setFaultNote(''); }}>上报故障</button>
+                )}
+              </div>
             </div>
           ))}
         </div>
       </Section>
-      <Section title="医保次数监控">
+      <Section title="医保次数监控（即将用尽自动进入「医生建议→家属确认」流程）">
         <table className="table">
-          <thead><tr><th>患者</th><th>项目</th><th>已用/总数</th><th>状态</th></tr></thead>
+          <thead><tr><th>患者</th><th>项目</th><th>已用/总数</th><th>自费价</th><th>自费额度</th><th>状态</th></tr></thead>
           <tbody>
-            {data.patients.flatMap((p) => p.insuranceItems.map((it) => (
-              <tr key={p.id + it.name}>
-                <td>{p.name}</td>
-                <td>{it.name}</td>
-                <td>{it.used}/{it.total}</td>
-                <td>{it.used >= it.total ? <Pill tone="red">已用完</Pill> : it.total - it.used <= 2 ? <Pill tone="amber">即将用完</Pill> : <Pill tone="green">正常</Pill>}</td>
-              </tr>
-            )))}
+            {data.patients.flatMap((p) => p.insuranceItems.map((it) => {
+              const conf = confByPatient(p.id);
+              const selfRemain = (it.selfPayTotal ?? 0) - (it.selfPayUsed ?? 0);
+              return (
+                <tr key={p.id + it.name}>
+                  <td>{p.name}</td>
+                  <td>{it.name}</td>
+                  <td>{it.used}/{it.total}</td>
+                  <td>{it.selfPayPrice ? `¥${it.selfPayPrice}` : '—'}</td>
+                  <td>{selfRemain > 0 ? <Pill tone="purple">余 {selfRemain} 次</Pill> : '—'}</td>
+                  <td>
+                    {conf ? <StatusPill dict={CONFIRM_STATUS} value={conf.status} />
+                      : it.used >= it.total ? <Pill tone="red">已用完</Pill>
+                        : it.total - it.used <= 2 ? <Pill tone="amber">即将用完</Pill> : <Pill tone="green">正常</Pill>}
+                  </td>
+                </tr>
+              );
+            }))}
           </tbody>
         </table>
       </Section>
       {faultTarget && (
-        <Modal title="上报器械故障" onClose={() => setFaultTarget(null)}>
-          <Field label="故障说明"><input value={faultNote} onChange={(e) => setFaultNote(e.target.value)} placeholder="如：皮带异响 / 无法开机" /></Field>
+        <Modal title="上报器械故障（停用并生成维修工单）" onClose={() => setFaultTarget(null)}>
+          <Field label="故障类型">
+            <select value={faultType} onChange={(e) => setFaultType(e.target.value)}>
+              <option>阻力异常</option><option>异响</option><option>无法开机</option><option>显示异常</option><option>其他</option>
+            </select>
+          </Field>
+          <Field label="故障说明"><input value={faultNote} onChange={(e) => setFaultNote(e.target.value)} placeholder="如：阻力输出不稳定，实测与设定值偏差>30%" /></Field>
           <div className="row-actions">
             <button className="btn btn-danger" onClick={async () => {
-              if (await call(() => api(`/equipment/${faultTarget}/status`, { body: { status: 'fault', note: faultNote } }), '已上报故障并生成协同事件')) { setFaultTarget(null); setFaultNote(''); }
+              if (await call(() => api(`/equipment/${faultTarget}/report-issue`, { body: { issueType: faultType, description: faultNote } }), '已上报：器械停用，工单与协同事件已生成')) { setFaultTarget(null); setFaultNote(''); }
             }}>确认上报</button>
           </div>
         </Modal>
       )}
+      {impactId && <EquipImpactModal equipmentId={impactId} onClose={() => setImpactId(null)} />}
     </div>
   );
 }

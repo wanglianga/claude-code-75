@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import db, { mapPatient, J } from '../db.js';
+import db, { mapPatient, mapConfirmation, J } from '../db.js';
 import { authRequired, requireRole } from '../auth.js';
 import { generateSlots, therapistAvailable, overlaps } from '../domain/slots.js';
 import { evaluateCheckin, evaluateSession, riskTipsFor } from '../domain/risk.js';
@@ -7,6 +7,7 @@ import { CATEGORIES } from '../domain/population.js';
 import {
   createEvent, addStep, getPatient, getAppointmentRow, getAppointment,
   activePlanOf, lastCompletedOf, autoStepForAppointment, pendingEscalationOf,
+  ensureInsuranceConfirmation, selfPayInfoOf, INSURANCE_WARN_THRESHOLD,
 } from '../helpers.js';
 import { acknowledgeEscalation } from './pain.js';
 import { uid, nowIso, todayStr, addDays } from '../util.js';
@@ -14,7 +15,7 @@ import { uid, nowIso, todayStr, addDays } from '../util.js';
 const router = Router();
 router.use(authRequired);
 
-const ACTIVE = "('scheduled','arrived','in_progress')";
+const ACTIVE = "('scheduled','arrived','in_progress','pending_reconfirm')";
 
 function loadSlotContext(patientId, equipmentId) {
   const patient = getPatient(patientId);
@@ -53,12 +54,24 @@ router.post('/slots', (req, res) => {
     lastFeedback,
     duration: duration ? Number(duration) : undefined,
   });
-  return res.json(result);
+  // 医保次数不足提示：预约时即将用尽则确保确认单存在（页面展示剩余次数/自费价格/医生建议/家属确认）
+  const ins = selfPayInfoOf(ctx.patient);
+  let confirmation = null;
+  if (ins.item && ins.remaining <= INSURANCE_WARN_THRESHOLD) {
+    confirmation = ensureInsuranceConfirmation(patientId, req.user);
+  }
+  return res.json({
+    ...result,
+    insurance: {
+      item: ins.item || null, remaining: ins.remaining, selfPayRemaining: ins.selfPayRemaining,
+      confirmation: confirmation ? mapConfirmation(confirmation) : null,
+    },
+  });
 });
 
 /* ---------- 创建预约 ---------- */
 router.post('/', requireRole('frontdesk', 'therapist', 'patient'), (req, res) => {
-  const { patientId, equipmentId, date, start, duration, allowSelfPay } = req.body || {};
+  const { patientId, equipmentId, date, start, duration } = req.body || {};
   if (!patientId || !equipmentId || !date || !start) return res.status(400).json({ error: '缺少预约参数' });
   const patient = getPatient(patientId);
   if (!patient) return res.status(404).json({ error: '患者不存在' });
@@ -83,33 +96,38 @@ router.post('/', requireRole('frontdesk', 'therapist', 'patient'), (req, res) =>
     return res.status(409).json({ error: '该器械此时段已被预约' });
   }
 
-  // 医保次数
-  const items = patient.insuranceItems || [];
-  const item = items[0];
-  let shortage = false;
-  if (item && item.used >= item.total) {
-    if (!allowSelfPay) {
-      return res.status(409).json({ error: `医保项目「${item.name}」次数已用完（${item.used}/${item.total}）`, code: 'INSURANCE_SHORTAGE' });
+  // 医保次数：即将用尽触发确认流；已用尽需家属确认自费后凭自费额度预约
+  const ins = selfPayInfoOf(patient);
+  let payType = 'insurance';
+  let confirmation = null;
+  if (ins.item) {
+    if (ins.remaining <= 0) {
+      if (ins.selfPayRemaining > 0) {
+        payType = 'self_pay';
+      } else {
+        ensureInsuranceConfirmation(patientId, req.user);
+        return res.status(409).json({
+          error: `医保项目「${ins.item.name}」次数已用完：需医生续开建议 → 家属确认自费后，方可按自费继续预约`,
+          code: 'INSURANCE_SHORTAGE',
+        });
+      }
+    } else if (ins.remaining <= INSURANCE_WARN_THRESHOLD) {
+      confirmation = ensureInsuranceConfirmation(patientId, req.user);
     }
-    shortage = true;
   }
 
   const plan = activePlanOf(patientId);
   const id = uid();
   const snapshot = { riskLevel: patient.riskLevel, tips: riskTipsFor(patient) };
-  db.prepare(`INSERT INTO appointments(id,patient_id,therapist_id,equipment_id,plan_id,insurance_item,date,start,duration,status,risk_snapshot,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?,'scheduled',?,?)`)
-    .run(id, patientId, therapistId, equipmentId, plan ? plan.id : null, item ? item.name : null,
-      date, start, dur, JSON.stringify(snapshot), nowIso());
-  if (shortage) {
-    createEvent({
-      patientId, appointmentId: id, planId: plan ? plan.id : null, type: 'insurance_shortage',
-      title: `${patient.name} 医保次数不足，已按自费预约`,
-      detail: { item: item.name, used: item.used, total: item.total, note: '预约时医保次数已用完，按自费处理' },
-      user: req.user,
-    });
-  }
-  return res.json({ appointment: getAppointment(id) });
+  db.prepare(`INSERT INTO appointments(id,patient_id,therapist_id,equipment_id,plan_id,insurance_item,date,start,duration,status,pay_type,risk_snapshot,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,'scheduled',?,?,?)`)
+    .run(id, patientId, therapistId, equipmentId, plan ? plan.id : null, ins.item ? ins.item.name : null,
+      date, start, dur, payType, JSON.stringify(snapshot), nowIso());
+  return res.json({
+    appointment: getAppointment(id),
+    payType,
+    insuranceWarning: confirmation ? mapConfirmation(confirmation) : null,
+  });
 });
 
 /* ---------- 到场登记（前台） ---------- */
@@ -258,12 +276,18 @@ router.post('/:id/complete', requireRole('therapist'), (req, res) => {
   const feedback = { ...f, at: nowIso(), by: req.user.name };
   db.prepare("UPDATE appointments SET status='completed', feedback=? WHERE id=?").run(JSON.stringify(feedback), a.id);
 
-  // 医保次数核销
-  if (a.insurance_item) {
+  // 医保/自费次数核销
+  if (a.pay_type === 'self_pay') {
+    const items = (patient.insuranceItems || []).map((it) => (it.name === a.insurance_item
+      ? { ...it, selfPayUsed: (it.selfPayUsed || 0) + 1 } : it));
+    db.prepare('UPDATE patients SET insurance_items=? WHERE id=?').run(JSON.stringify(items), patient.id);
+  } else if (a.insurance_item) {
     const items = patient.insuranceItems.map((it) => (it.name === a.insurance_item && it.used < it.total
       ? { ...it, used: it.used + 1 } : it));
     db.prepare('UPDATE patients SET insurance_items=? WHERE id=?').run(JSON.stringify(items), patient.id);
   }
+  // 核销后若医保即将用尽 → 触发确认流（医生续开建议/家属确认）
+  const warning = ensureInsuranceConfirmation(a.patient_id, req.user);
   // 器械进入消毒
   db.prepare("UPDATE equipment SET status='disinfecting' WHERE id=? AND status='available'").run(a.equipment_id);
 
@@ -281,7 +305,10 @@ router.post('/:id/complete', requireRole('therapist'), (req, res) => {
   const interval = Math.max(f.nextIntervalDays || 0, cfg.minIntervalDays || 1, (f.painAfter ?? 0) >= 6 ? 3 : 0);
   const nextSuggestion = { date: addDays(todayStr(), interval), duration: a.duration };
   const alerts = evaluateSession(patient, { ...(J(a.session, {}) || {}), ...(s || {}) });
-  return res.json({ ok: true, alerts, eventsCreated, nextSuggestion });
+  return res.json({
+    ok: true, alerts, eventsCreated, nextSuggestion,
+    insuranceWarning: warning ? mapConfirmation(warning) : null,
+  });
 });
 
 /* ---------- 改派治疗师（前台：应对请假等） ---------- */
@@ -302,6 +329,81 @@ router.post('/:id/reassign', requireRole('frontdesk'), (req, res) => {
   db.prepare('UPDATE appointments SET therapist_id=? WHERE id=?').run(therapistId, a.id);
   autoStepForAppointment(a.id, ['therapist_leave'], req.user, '改派治疗师', `已改派给 ${t.name}`);
   return res.json({ appointment: getAppointment(a.id) });
+});
+
+/* ---------- 改约（器械停用后）：同效果器械可直接平移；效果不同须治疗师重新确认 ---------- */
+router.post('/:id/reschedule', requireRole('frontdesk'), (req, res) => {
+  const { equipmentId, date, start } = req.body || {};
+  const a = getAppointmentRow(req.params.id);
+  if (!a) return res.status(404).json({ error: '预约不存在' });
+  if (!['scheduled', 'arrived', 'pending_reconfirm'].includes(a.status)) {
+    return res.status(409).json({ error: '当前状态不可改约' });
+  }
+  const newEqId = equipmentId || a.equipment_id;
+  const newDate = date || a.date;
+  const newStart = start || a.start;
+  const eq = db.prepare('SELECT * FROM equipment WHERE id=?').get(newEqId);
+  if (!eq) return res.status(404).json({ error: '器械不存在' });
+  if (eq.status !== 'available') return res.status(409).json({ error: `器械「${eq.name}」当前不可用，无法改约到该器械` });
+  const patient = getPatient(a.patient_id);
+
+  // 时段冲突校验（治疗师排班/请假 + 器械占用）
+  const schedules = db.prepare('SELECT * FROM schedules WHERE therapist_id=?').all(a.therapist_id);
+  const leaves = db.prepare('SELECT * FROM therapist_leaves WHERE therapist_id=?').all(a.therapist_id);
+  const dayAppts = db.prepare(`SELECT * FROM appointments WHERE date=? AND status IN ${ACTIVE} AND id!=?
+    AND (therapist_id=? OR equipment_id=?)`).all(newDate, a.id, a.therapist_id, newEqId);
+  if (!therapistAvailable({ therapistId: a.therapist_id, date: newDate, start: newStart, duration: a.duration, schedules, leaves, appointments: dayAppts })) {
+    return res.status(409).json({ error: '该时段治疗师不可用（排班外/请假/冲突）' });
+  }
+  if (dayAppts.some((x) => x.equipment_id === newEqId && overlaps(newStart, a.duration, x.start, x.duration))) {
+    return res.status(409).json({ error: '替代器械此时段已被预约' });
+  }
+
+  const oldEq = db.prepare('SELECT * FROM equipment WHERE id=?').get(a.equipment_id);
+  const sameEffect = newEqId === a.equipment_id
+    || ((oldEq.effect_group || '') !== '' && oldEq.effect_group === eq.effect_group);
+
+  if (sameEffect) {
+    // 训练效果相同：前台可直接平移预约
+    db.prepare("UPDATE appointments SET equipment_id=?, date=?, start=?, status='scheduled' WHERE id=?")
+      .run(newEqId, newDate, newStart, a.id);
+    db.prepare("UPDATE plan_reconfirmations SET status='cancelled' WHERE appointment_id=? AND status='pending'").run(a.id);
+    autoStepForAppointment(a.id, ['equipment_fault'], req.user, '改约器械',
+      `已改约至「${eq.name}」（${newDate} ${newStart}）：训练效果相同，直接平移`);
+    return res.json({ appointment: getAppointment(a.id), reconfirm: false });
+  }
+
+  // 训练效果不同：前台不能简单平移 → 生成计划重确认，预约挂起待治疗师确认
+  db.prepare("UPDATE plan_reconfirmations SET status='cancelled' WHERE appointment_id=? AND status='pending'").run(a.id);
+  const plan = activePlanOf(a.patient_id);
+  const recId = uid();
+  db.prepare(`INSERT INTO plan_reconfirmations(id,patient_id,plan_id,appointment_id,from_equipment_id,to_equipment_id,reason,status,
+    old_goals,old_rom,old_estimated_sessions,old_patient_reminder,created_at)
+    VALUES(?,?,?,?,?,?,?,'pending',?,?,?,?,?)`).run(
+    recId, a.patient_id, plan ? plan.id : null, a.id, a.equipment_id, newEqId,
+    `原器械「${oldEq.name}」停用，替代器械「${eq.name}」训练效果不同（${oldEq.effect_desc || oldEq.effect_group || '—'} → ${eq.effect_desc || eq.effect_group || '—'}），需重新确认训练目标与动作范围`,
+    plan ? plan.goals : '', plan ? (plan.rom || '') : '', plan ? plan.estimated_sessions : null,
+    plan ? (plan.patient_reminder || '') : '', nowIso(),
+  );
+  db.prepare("UPDATE appointments SET equipment_id=?, date=?, start=?, status='pending_reconfirm' WHERE id=?")
+    .run(newEqId, newDate, newStart, a.id);
+  createEvent({
+    patientId: a.patient_id, appointmentId: a.id, planId: plan ? plan.id : null, equipmentId: newEqId,
+    type: 'plan_reconfirm',
+    title: `${patient.name} 改约至「${eq.name}」：训练效果不同，待治疗师重新确认`,
+    detail: {
+      reconfirmationId: recId, fromEquipment: oldEq.name, toEquipment: eq.name,
+      fromEffect: oldEq.effect_desc || oldEq.effect_group || '—', toEffect: eq.effect_desc || eq.effect_group || '—',
+      note: `替代器械训练效果不同，治疗师需重新确认训练目标与动作范围；确认前预约不可执行（前台不能简单平移）`,
+    },
+    user: req.user,
+  });
+  autoStepForAppointment(a.id, ['equipment_fault'], req.user, '改约器械',
+    `已改约至「${eq.name}」（${newDate} ${newStart}）：训练效果不同，待治疗师重新确认`);
+  return res.json({
+    appointment: getAppointment(a.id), reconfirm: true,
+    message: '替代器械训练效果不同：已挂起预约并提交治疗师重新确认（目标/动作范围确认前不可执行）',
+  });
 });
 
 /* ---------- 家属在线知情确认（高风险） ---------- */

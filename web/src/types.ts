@@ -10,7 +10,10 @@ export interface User {
   patientId: string | null;
 }
 
-export interface InsuranceItem { name: string; total: number; used: number }
+export interface InsuranceItem {
+  name: string; total: number; used: number;
+  selfPayPrice?: number; selfPayTotal?: number; selfPayUsed?: number;
+}
 
 export interface Patient {
   id: string;
@@ -43,6 +46,8 @@ export interface Equipment {
   suitableCategories: string[];
   lastDisinfectedAt: string | null;
   note: string;
+  effectGroup: string;
+  effectDesc: string;
 }
 
 export interface PlanItem { equipmentType: string; freqPerWeek: number; duration: number; intensity: string }
@@ -55,6 +60,9 @@ export interface Plan {
   goals: string;
   items: PlanItem[];
   note: string;
+  rom: string;
+  estimatedSessions: number | null;
+  patientReminder: string;
   previousPlanId: string | null;
   createdBy: string;
   createdAt: string;
@@ -132,6 +140,7 @@ export interface Appointment {
   status: string;
   late: boolean;
   familyConsent: boolean;
+  payType: string;
   checkin: Checkin | null;
   session: SessionRec | null;
   feedback: Feedback | null;
@@ -202,8 +211,111 @@ export interface Bootstrap {
   equipment: Equipment[];
   plans: Plan[];
   therapists: TherapistInfo[];
+  confirmations: InsuranceConfirmation[];
+  billing: BillingRecord[];
+  reconfirmations: PlanReconfirmation[];
+  maintenanceOrders: MaintenanceOrder[];
+}
+
+/* ---------------- 医保次数不足确认单 ---------------- */
+export interface InsuranceConfirmation {
+  id: string;
+  patientId: string;
+  insuranceItem: string;
+  remaining: number;
+  selfPayPrice: number;
+  doctorAdvice: string;
+  doctorAdviceBy: string;
+  doctorAdviceAt: string | null;
+  status: string; // pending_advice / pending_family / confirmed / rejected / reopened
+  confirmerName: string;
+  confirmSessions: number | null;
+  confirmAmount: number | null;
+  therapistNote: string;
+  therapistNoteBy: string;
+  decidedAt: string | null;
+  pauseReason: string;
+  eventId: string | null;
+  createdAt: string;
+  patientName?: string;
+}
+
+/* ---------------- 收费记录 ---------------- */
+export interface BillingRecord {
+  id: string;
+  patientId: string;
+  confirmationId: string | null;
+  item: string;
+  sessions: number;
+  amount: number;
+  payType: string;
+  status: string; // unpaid / paid
+  confirmerName: string;
+  therapistNote: string;
+  note: string;
+  createdAt: string;
+  paidAt: string | null;
+  patientName?: string;
+}
+
+/* ---------------- 器械维修工单 ---------------- */
+export interface MaintenanceOrder {
+  id: string;
+  equipmentId: string;
+  issueType: string;
+  description: string;
+  status: string; // open / repairing / resolved
+  disinfectionStatus: string; // pending / done
+  reportedBy: string;
+  createdAt: string;
+  updatedAt: string | null;
+  resolvedAt: string | null;
+  equipmentName?: string;
+  equipmentType?: string;
+}
+
+/* ---------------- 计划重新确认（器械变更） ---------------- */
+export interface PlanReconfirmation {
+  id: string;
+  patientId: string;
+  planId: string | null;
+  appointmentId: string;
+  fromEquipmentId: string;
+  toEquipmentId: string;
+  reason: string;
+  status: string; // pending / confirmed / cancelled
+  oldGoals: string; oldRom: string;
+  oldEstimatedSessions: number | null; oldPatientReminder: string;
+  newGoals: string; newRom: string;
+  newEstimatedSessions: number | null; newPatientReminder: string;
+  confirmedBy: string;
+  confirmedAt: string | null;
+  createdAt: string;
+  patientName?: string;
+  fromEquipmentName?: string;
+  toEquipmentName?: string;
+  apptDate?: string;
+  apptStart?: string;
+}
+
+/* ---------------- 器械影响分析 ---------------- */
+export interface EquipmentImpact {
+  equipment: Equipment;
+  affected: Appointment[];
+  alternatives: (Equipment & { sameEffect: boolean })[];
+  order: MaintenanceOrder | null;
 }
 
 export interface Slot { date: string; start: string; end: string }
 
-export interface SlotResult { slots: Slot[]; warnings: string[]; duration: number }
+export interface SlotResult {
+  slots: Slot[];
+  warnings: string[];
+  duration: number;
+  insurance?: {
+    item: InsuranceItem | null;
+    remaining: number;
+    selfPayRemaining: number;
+    confirmation: InsuranceConfirmation | null;
+  } | null;
+}

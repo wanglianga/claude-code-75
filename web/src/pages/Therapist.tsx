@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { api, ApiError } from '../api';
-import type { Appointment, Patient, PainEscalation } from '../types';
-import { APPT_STATUS, WEEKDAYS, todayStr } from '../labels';
+import type { Appointment, Patient, PlanReconfirmation } from '../types';
+import { APPT_STATUS, CONFIRM_STATUS, WEEKDAYS, todayStr, fmtDT } from '../labels';
 import { Tabs, Section, StatusPill, Pill, RiskBadge, Modal, Field, Empty, AlertList } from '../components/ui';
 import { EventBoard } from '../components/Events';
 import { PatientDetail } from '../components/PatientDetail';
@@ -13,18 +13,160 @@ import {
 
 export default function Therapist() {
   const [tab, setTab] = useState('exec');
+  const data = useStore((s) => s.data);
+  const pendingReconfirm = (data?.reconfirmations || []).filter((r) => r.status === 'pending').length;
+  const pendingNote = (data?.confirmations || []).filter((c) => c.status === 'confirmed' && !c.therapistNote).length;
   return (
     <div>
       <Tabs active={tab} onChange={setTab} items={[
-        ['exec', '今日执行'], ['handover', '疼痛交班'], ['schedule', '我的日程'], ['patients', '我的患者'], ['events', '协同事件'], ['leave', '请假与排班'],
+        ['exec', '今日执行'], ['handover', '疼痛交班'],
+        ['reconfirm', `计划确认${pendingReconfirm ? `（${pendingReconfirm}）` : ''}`],
+        ['selfpay', `自费确认${pendingNote ? `（${pendingNote}）` : ''}`],
+        ['schedule', '我的日程'], ['patients', '我的患者'], ['events', '协同事件'], ['leave', '请假与排班'],
       ]} />
       {tab === 'exec' && <ExecPanel />}
       {tab === 'handover' && <HandoverPanel />}
+      {tab === 'reconfirm' && <ReconfirmPanel />}
+      {tab === 'selfpay' && <SelfPayPanel />}
       {tab === 'schedule' && <SchedulePanel />}
       {tab === 'patients' && <MyPatients />}
       {tab === 'events' && <EventBoard />}
       {tab === 'leave' && <LeavePanel />}
     </div>
+  );
+}
+
+/* ---------------- 自费确认：家属确认结果同步至此，补充治疗师说明（收费争议可追溯） ---------------- */
+function SelfPayPanel() {
+  const { data, call } = useStore();
+  const [target, setTarget] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  const list = useMemo(() => (data?.confirmations || []).filter((c) => c.status === 'confirmed'), [data]);
+  if (!data) return null;
+  return (
+    <Section title="家属自费确认（已同步前台收费与本页；请补充治疗师说明，收费争议可追溯）">
+      {list.length === 0 ? <Empty>暂无家属自费确认记录</Empty> : (
+        <table className="table">
+          <thead><tr><th>患者</th><th>项目</th><th>确认人</th><th>次数/金额</th><th>状态</th><th>治疗师说明</th><th>操作</th></tr></thead>
+          <tbody>
+            {list.map((c) => (
+              <tr key={c.id}>
+                <td><b>{c.patientName}</b></td>
+                <td>{c.insuranceItem}</td>
+                <td>{c.confirmerName}</td>
+                <td>{c.confirmSessions} 次 / ¥{c.confirmAmount}</td>
+                <td><StatusPill dict={CONFIRM_STATUS} value={c.status} /></td>
+                <td className="cell-note">{c.therapistNote || <span className="muted">待补充</span>}</td>
+                <td>
+                  <button className="btn btn-sm btn-primary" onClick={() => { setTarget(c.id); setNote(c.therapistNote || ''); }}>
+                    {c.therapistNote ? '修改说明' : '填写说明'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="muted mt8">说明会同步到前台收费记录，与确认人、金额一起留痕，收费争议可追溯。</div>
+      {target && (
+        <Modal title="治疗师说明（同步前台收费记录）" onClose={() => setTarget(null)}>
+          <Field label="治疗师说明（如：患者当前训练进展与继续训练建议）">
+            <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="如：患者心肺耐力稳步提升，建议按原计划继续，注意监测血压心率" />
+          </Field>
+          <div className="row-actions">
+            <button className="btn btn-primary" disabled={!note.trim()} onClick={async () => {
+              if (await call(() => api(`/insurance/confirmations/${target}/therapist-note`, { body: { note } }), '治疗师说明已保存并同步收费记录')) setTarget(null);
+            }}>保存说明</button>
+          </div>
+        </Modal>
+      )}
+    </Section>
+  );
+}
+
+/* ---------------- 计划确认：替代器械效果不同 → 重新确认目标/动作范围/预计疗程/患者提醒 ---------------- */
+function ReconfirmPanel() {
+  const { data, call } = useStore();
+  const [target, setTarget] = useState<PlanReconfirmation | null>(null);
+  const [goals, setGoals] = useState('');
+  const [rom, setRom] = useState('');
+  const [sessions, setSessions] = useState('10');
+  const [reminder, setReminder] = useState('');
+  const list = useMemo(() => [...(data?.reconfirmations || [])].sort((a, b) => (a.status === b.status ? b.createdAt.localeCompare(a.createdAt) : a.status === 'pending' ? -1 : 1)), [data]);
+  if (!data) return null;
+  const pending = list.filter((r) => r.status === 'pending');
+
+  const openForm = (r: PlanReconfirmation) => {
+    setTarget(r);
+    setGoals(r.oldGoals);
+    setRom(r.oldRom);
+    setSessions(String(r.oldEstimatedSessions ?? 10));
+    setReminder(r.oldPatientReminder);
+  };
+
+  return (
+    <Section title="器械变更 · 计划重新确认（替代器械训练效果不同，需重新确认目标与动作范围）">
+      {list.length === 0 && <Empty>暂无待确认记录</Empty>}
+      {list.map((r) => (
+        <div key={r.id} className={`ins-conf-card ${r.status === 'pending' ? 'ins-conf-pending' : ''}`}>
+          <div className="row-between">
+            <div>
+              <b>{r.patientName}</b> · {r.apptDate} {r.apptStart} ·
+              「{r.fromEquipmentName}」→「{r.toEquipmentName}」
+            </div>
+            {r.status === 'pending' ? <Pill tone="amber">待重新确认</Pill>
+              : r.status === 'confirmed' ? <Pill tone="green">已确认 · {r.confirmedBy}</Pill> : <Pill tone="gray">已取消</Pill>}
+          </div>
+          <div className="muted">{r.reason}</div>
+          {r.status === 'pending' && (
+            <>
+              <div className="kv-grid mt4">
+                <div><span className="muted">现训练目标：</span>{r.oldGoals || '—'}</div>
+                <div><span className="muted">现动作范围：</span>{r.oldRom || '—'}</div>
+              </div>
+              <div className="row-actions mt4">
+                <button className="btn btn-sm btn-primary" onClick={() => openForm(r)}>重新确认（调整目标/动作范围/疗程/提醒）</button>
+              </div>
+            </>
+          )}
+          {r.status === 'confirmed' && (
+            <div className="note-box mt4">
+              新目标：{r.newGoals}；动作范围：{r.newRom}；预计疗程 {r.newEstimatedSessions} 次<br />
+              患者端动作提醒：{r.newPatientReminder || '—'}
+              <div className="muted">{fmtDT(r.confirmedAt)} 确认</div>
+            </div>
+          )}
+        </div>
+      ))}
+      {pending.length > 0 && (
+        <div className="muted mt8">确认前，相关预约保持「待治疗师确认」状态，前台不能简单平移。</div>
+      )}
+      {target && (
+        <Modal wide title={`重新确认训练计划：${target.patientName}（${target.fromEquipmentName} → ${target.toEquipmentName}）`} onClose={() => setTarget(null)}>
+          <div className="alert-list tone-amber">
+            <div>⚠ 替代器械训练效果不同，请重新评估并确认：训练目标、动作范围、预计疗程与患者端动作提醒。确认后预约恢复可执行，患者端同步更新。</div>
+          </div>
+          <Field label="训练目标">
+            <textarea rows={2} value={goals} onChange={(e) => setGoals(e.target.value)} />
+          </Field>
+          <div className="grid2">
+            <Field label="动作范围（ROM）"><input value={rom} onChange={(e) => setRom(e.target.value)} placeholder="如：屈膝 0-90°（抗阻下不超过90°）" /></Field>
+            <Field label="预计疗程（次）"><input type="number" min={1} max={99} value={sessions} onChange={(e) => setSessions(e.target.value)} /></Field>
+          </div>
+          <Field label="患者端动作提醒（患者/家属端可见）">
+            <textarea rows={2} value={reminder} onChange={(e) => setReminder(e.target.value)} placeholder="如：改为定阻力训练：阻力从最低档开始，训练中如膝内刺痛立即告知治疗师" />
+          </Field>
+          <div className="row-actions">
+            <button className="btn btn-primary" disabled={!goals.trim() || !rom.trim()} onClick={async () => {
+              if (await call(() => api(`/insurance/reconfirmations/${target.id}/confirm`, {
+                body: { goals, rom, estimatedSessions: Number(sessions) || 10, patientReminder: reminder },
+              }), '已重新确认：训练目标/预计疗程/患者提醒已更新，预约恢复执行')) setTarget(null);
+            }}>确认并更新计划</button>
+            <button className="btn" onClick={() => setTarget(null)}>取消</button>
+          </div>
+        </Modal>
+      )}
+    </Section>
   );
 }
 
@@ -67,7 +209,7 @@ function ExecCard({ appt }: { appt: Appointment }) {
           {p.familyAccompany && <Pill tone="purple">需家属陪同</Pill>}
           <RiskTags patient={p} />
         </div>
-        <div className="muted">{appt.equipmentName} · {appt.duration}分钟 · 医保 {appt.insuranceItem || '自费'}</div>
+        <div className="muted">{appt.equipmentName} · {appt.duration}分钟 · {appt.payType === 'self_pay' ? '自费' : `医保 ${appt.insuranceItem || ''}`}</div>
       </div>
       {appt.riskSnapshot && appt.riskSnapshot.tips.length > 0 && (
         <div className="tip-inline">{appt.riskSnapshot.tips.slice(0, 3).map((t, i) => <span key={i} className={`tip-${t.level === '禁忌' || t.level === '高风险' || t.level === '风险标签' ? 'red' : 'gray'}`}>【{t.level}】{t.text}</span>)}</div>

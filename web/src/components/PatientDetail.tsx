@@ -120,6 +120,13 @@ export function PatientDetail({ patientId, onClose }: { patientId: string; onClo
                 <span className="muted">{fmtDT(pl.createdAt)} · {pl.createdBy}</span>
               </div>
               <div className="plan-goals">目标：{pl.goals}</div>
+              {(pl.rom || pl.estimatedSessions) && (
+                <div className="muted">
+                  {pl.rom && <span>动作范围：{pl.rom}　</span>}
+                  {pl.estimatedSessions && <span>预计疗程：{pl.estimatedSessions} 次</span>}
+                </div>
+              )}
+              {pl.patientReminder && <div className="note-box mt4">患者端动作提醒：{pl.patientReminder}</div>}
               {pl.items.length > 0 && (
                 <table className="table mt4">
                   <thead><tr><th>器械类型</th><th>频次</th><th>单次时长</th><th>强度</th></tr></thead>

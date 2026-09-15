@@ -263,3 +263,9 @@ textarea { resize: vertical; }
 .handover-mini-item { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; line-height: 1.7; }
 .handover-mini-item.is-pending { border-color: #fca5a5; background: #fffafa; }
 .pain-event .table th { color: var(--muted); }
+
+/* ---------- 医保确认单 / 计划重确认 ---------- */
+.ins-conf-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 10px; background: #fff; font-size: 13px; line-height: 1.8; }
+.ins-conf-pending { border-color: #fcd34d; background: #fffdf5; }
+.ins-warn b { color: #92400e; }
+.ins-warn .pill { margin-left: 6px; }

@@ -23,6 +23,7 @@ export function seedIfEmpty() {
   const t2 = mkUser('therapist2', 'therapist', '李强');
   const t3 = mkUser('therapist3', 'therapist', '陈雪');
   mkUser('maint', 'maintenance', '赵建国');
+  mkUser('doctor', 'doctor', '李医生（康复医师）');
 
   /* ---------- 患者档案 ---------- */
   const insPatient = db.prepare(`INSERT INTO patients(id,name,age,gender,category,diagnosis,post_op_stage,rom,contraindications,
@@ -42,7 +43,7 @@ export function seedIfEmpty() {
     name: '张伟', age: 58, gender: '男', category: 'post_op',
     diagnosis: '右膝关节置换术后', postOpStage: '术后3周', rom: '屈膝 0-95°',
     contraindications: ['深蹲超过90°', '跪姿', '膝关节扭转'], painScore: 4, familyAccompany: false,
-    insuranceItems: [{ name: '运动疗法', total: 20, used: 6 }], therapistId: t1,
+    insuranceItems: [{ name: '运动疗法', total: 20, used: 6, selfPayPrice: 120 }], therapistId: t1,
     emergencyName: '张强（儿子）', emergencyPhone: '13800000001',
     doctorOrders: '渐进负重，屈膝角度每周增加10°，避免扭转',
   });
@@ -52,7 +53,7 @@ export function seedIfEmpty() {
     name: '刘芳', age: 66, gender: '女', category: 'chronic',
     diagnosis: '冠心病稳定期、高血压2级', rom: '关节活动度正常',
     contraindications: ['憋气发力', '高强度间歇训练'], painScore: 2, familyAccompany: false,
-    insuranceItems: [{ name: '运动疗法', total: 15, used: 12 }], therapistId: t2,
+    insuranceItems: [{ name: '运动疗法', total: 15, used: 13, selfPayPrice: 120 }], therapistId: t2,
     emergencyName: '刘军（儿子）', emergencyPhone: '13800000002',
     doctorOrders: '靶心率控制在(220-年龄)×60%以下，随身携带硝酸甘油',
   });
@@ -60,7 +61,7 @@ export function seedIfEmpty() {
     name: '李小乐', age: 7, gender: '男', category: 'pediatric',
     diagnosis: '痉挛型脑瘫（轻）', rom: '双下肢肌张力偏高，踝背屈受限',
     contraindications: ['过度牵拉'], painScore: 1, familyAccompany: true,
-    insuranceItems: [{ name: '儿童康复训练', total: 30, used: 9 }], therapistId: t3,
+    insuranceItems: [{ name: '儿童康复训练', total: 30, used: 9, selfPayPrice: 150 }], therapistId: t3,
     emergencyName: '李母', emergencyPhone: '13800000003',
     doctorOrders: '以游戏化训练为主，避免疲劳与过度牵拉',
   });
@@ -68,7 +69,7 @@ export function seedIfEmpty() {
     name: '陈桂香', age: 79, gender: '女', category: 'elderly',
     diagnosis: '反复跌倒史、体位性低血压、骨质疏松', rom: '关节活动度基本正常',
     contraindications: ['快速转身', '闭眼单腿站立'], painScore: 3, familyAccompany: true,
-    insuranceItems: [{ name: '平衡功能训练', total: 12, used: 3 }], therapistId: t1,
+    insuranceItems: [{ name: '平衡功能训练', total: 12, used: 3, selfPayPrice: 100 }], therapistId: t1,
     emergencyName: '陈燕（女儿）', emergencyPhone: '13800000004',
     doctorOrders: '训练需一对一保护，监测体位性血压，防跌倒',
   });
@@ -79,20 +80,24 @@ export function seedIfEmpty() {
   mkUser('family1', 'family', '张强（张伟之子）', p1.id);
   mkUser('family2', 'family', '李母（小乐妈妈）', p3.id);
   mkUser('family3', 'family', '陈燕（陈桂香之女）', p4.id);
+  mkUser('family4', 'family', '刘军（刘芳之子）', p2.id);
 
-  /* ---------- 器械 ---------- */
-  const insEquip = db.prepare('INSERT INTO equipment(id,name,type,status,suitable_categories,last_disinfected_at,note) VALUES(?,?,?,?,?,?,?)');
-  const mkEquip = (name, type, status, cats, note = '') => {
+  /* ---------- 器械（effect_group 相同=训练效果相同可平移；不同=需治疗师重新确认） ---------- */
+  const insEquip = db.prepare('INSERT INTO equipment(id,name,type,status,suitable_categories,last_disinfected_at,note,effect_group,effect_desc) VALUES(?,?,?,?,?,?,?,?,?)');
+  const mkEquip = (name, type, status, cats, note = '', effectGroup = '', effectDesc = '') => {
     const id = uid();
-    insEquip.run(id, name, type, status, JSON.stringify(cats), now, note);
+    insEquip.run(id, name, type, status, JSON.stringify(cats), now, note, effectGroup, effectDesc);
     return id;
   };
-  const e1 = mkEquip('等速肌力训练仪', '肌力训练', 'available', ['post_op', 'chronic']);
-  const e2 = mkEquip('下肢功率车', '有氧训练', 'available', ['post_op', 'chronic', 'elderly']);
-  const e3 = mkEquip('平衡训练台', '平衡训练', 'available', ['elderly', 'chronic']);
-  const e4 = mkEquip('悬吊训练系统', '神经肌肉激活', 'available', ['pediatric', 'post_op']);
-  mkEquip('儿童感统训练组合', '感统训练', 'maintenance', ['pediatric'], '滑梯连接件检修中，预计明日恢复');
-  const e6 = mkEquip('上肢CPM机', '关节被动活动', 'available', ['post_op']);
+  const e1 = mkEquip('等速肌力训练仪A', '肌力训练', 'available', ['post_op', 'chronic'], '', 'isokinetic', '等速肌力训练·阻力自适应');
+  const e2 = mkEquip('下肢功率车', '有氧训练', 'available', ['post_op', 'chronic', 'elderly'], '', 'aerobic_bike', '有氧功率训练·恒定负荷');
+  const e3 = mkEquip('平衡训练台', '平衡训练', 'available', ['elderly', 'chronic'], '', 'balance', '静态/动态平衡训练');
+  const e4 = mkEquip('悬吊训练系统', '神经肌肉激活', 'available', ['pediatric', 'post_op'], '', 'sling', '悬吊减重神经肌肉激活');
+  mkEquip('儿童感统训练组合', '感统训练', 'maintenance', ['pediatric'], '滑梯连接件检修中，预计明日恢复', 'sensory', '感统游戏化训练');
+  const e6 = mkEquip('上肢CPM机', '关节被动活动', 'available', ['post_op'], '', 'cpm', '关节被动持续活动');
+  // 与 e1 同效果组（可直接平移）与不同效果组（需治疗师重新确认）的替代器械
+  mkEquip('等速肌力训练仪B', '肌力训练', 'available', ['post_op', 'chronic'], '', 'isokinetic', '等速肌力训练·阻力自适应');
+  mkEquip('下肢抗阻训练器', '肌力训练', 'available', ['post_op', 'chronic'], '', 'resistance', '定阻力抗阻训练·需重新设定负荷');
 
   /* ---------- 治疗师排班 ---------- */
   const insSch = db.prepare('INSERT INTO schedules(id,therapist_id,weekday,start,end) VALUES(?,?,?,?,?)');
@@ -105,19 +110,24 @@ export function seedIfEmpty() {
   addSch(t3, [1, 2, 3, 4, 5], '14:00', '17:00');
   addSch(t3, [6], '09:00', '12:00');
 
-  /* ---------- 康复计划 v1 ---------- */
-  const insPlan = db.prepare(`INSERT INTO plans(id,patient_id,version,status,goals,items,note,previous_plan_id,created_by,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?)`);
-  const mkPlan = (patientId, goals, note) => {
+  /* ---------- 康复计划 v1（含动作范围/预计疗程/患者端动作提醒） ---------- */
+  const insPlan = db.prepare(`INSERT INTO plans(id,patient_id,version,status,goals,items,note,rom,estimated_sessions,patient_reminder,previous_plan_id,created_by,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,NULL,?,?)`);
+  const mkPlan = (patientId, goals, note, rom = '', estimatedSessions = null, patientReminder = '') => {
     const id = uid();
     const cat = db.prepare('SELECT category FROM patients WHERE id=?').get(patientId).category;
-    insPlan.run(id, patientId, 1, 'active', goals, JSON.stringify(PLAN_TEMPLATES[cat] || []), note, null, '王敏', now);
+    insPlan.run(id, patientId, 1, 'active', goals, JSON.stringify(PLAN_TEMPLATES[cat] || []), note,
+      rom, estimatedSessions, patientReminder, '王敏', now);
     return id;
   };
-  const plan1 = mkPlan(p1.id, '恢复膝关节活动度至110°，重建股四头肌肌力', '术后3周首次评估建档');
-  const plan2 = mkPlan(p2.id, '提升心肺耐力，控制血压心率风险', '心内科会诊后制定');
-  const plan3 = mkPlan(p3.id, '改善下肢肌张力与步态，提升游戏参与度', '家属全程陪同');
-  const plan4 = mkPlan(p4.id, '降低跌倒风险，提升静态/动态平衡能力', '高风险：一对一保护');
+  const plan1 = mkPlan(p1.id, '恢复膝关节活动度至110°，重建股四头肌肌力', '术后3周首次评估建档',
+    '屈膝 0-95°（目标 0-110°）', 14, '每日直腿抬高3组×15次；训练后冰敷15分钟；屈膝角度每周增加10°');
+  const plan2 = mkPlan(p2.id, '提升心肺耐力，控制血压心率风险', '心内科会诊后制定',
+    '关节活动度正常', 12, '靶心率控制在(220-年龄)×60%以下；随身携带硝酸甘油；训练前后测量血压');
+  const plan3 = mkPlan(p3.id, '改善下肢肌张力与步态，提升游戏参与度', '家属全程陪同',
+    '踝背屈受限', 20, '游戏化训练为主，单次不超过30分钟；家属居家辅助牵拉每日2次');
+  const plan4 = mkPlan(p4.id, '降低跌倒风险，提升静态/动态平衡能力', '高风险：一对一保护',
+    '关节活动度基本正常', 12, '一对一保护，防跌倒；避免快速转身；居家练习需家属督导');
 
   /* ---------- 预约（含历史已完成） ---------- */
   const insAppt = db.prepare(`INSERT INTO appointments(id,patient_id,therapist_id,equipment_id,plan_id,insurance_item,date,start,duration,status,late,family_consent,checkin,session,feedback,risk_snapshot,created_at)
