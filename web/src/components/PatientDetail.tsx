@@ -4,6 +4,7 @@ import { api } from '../api';
 import type { Patient, Plan, PlanItem } from '../types';
 import { APPT_STATUS, PATIENT_STATUS, PLAN_STATUS, fmtDT } from '../labels';
 import { Modal, Pill, RiskBadge, StatusPill, KV, Empty, Timeline, Field } from './ui';
+import { RiskTags, usePatientEscalations } from './Pain';
 
 /** 患者 360° 视图：档案 / 风险 / 医保 / 计划版本链（含衔接） / 训练历史 / 相关事件 */
 export function PatientDetail({ patientId, onClose }: { patientId: string; onClose: () => void }) {
@@ -17,6 +18,7 @@ export function PatientDetail({ patientId, onClose }: { patientId: string; onClo
   const appts = useMemo(() => (data?.appointments || []).filter((a) => a.patientId === patientId)
     .sort((a, b) => (b.date + b.start).localeCompare(a.date + a.start)).slice(0, 8), [data, patientId]);
   const events = useMemo(() => (data?.events || []).filter((e) => e.patientId === patientId).slice(0, 6), [data, patientId]);
+  const escalations = usePatientEscalations(patientId);
   if (!p || !data || !meta || !user) return null;
   const cat = meta.categories[p.category];
   const activePlan = plans.find((pl) => pl.status === 'active');
@@ -55,10 +57,32 @@ export function PatientDetail({ patientId, onClose }: { patientId: string; onClo
         </div>
         <div>
           <b>风险提示（{cat?.label}）</b>
+          {p.riskTags?.length > 0 && <div className="tag-row"><RiskTags patient={p} /></div>}
           <ul className="tip-list">
             {p.riskLevel === '高' && <li className="tip-red">高风险患者：训练前须确认医生医嘱、家属知情与紧急联系人</li>}
             {cat?.tips.map((t) => <li key={t}>{t}</li>)}
           </ul>
+          {escalations.length > 0 && (
+            <>
+              <b className="mt8 block">疼痛升级交班记录</b>
+              <div className="handover-mini">
+                {escalations.slice(0, 3).map((esc) => (
+                  <div key={esc.id} className={`handover-mini-item ${esc.handoverAckAt ? 'is-done' : 'is-pending'}`}>
+                    <div className="row-between">
+                      <b>{esc.date} {esc.start}</b>
+                      {esc.handoverAckAt
+                        ? <Pill tone="green">{esc.handoverAckName} 已知悉</Pill>
+                        : <Pill tone="red">待交班知悉</Pill>}
+                    </div>
+                    <div className="muted">疼痛 {esc.painBefore}→<b className="pain-num">{esc.painPeak}</b>（+{esc.painChange}）｜角度 {esc.actionAngle || '—'}｜{esc.therapistName} 交班</div>
+                    <div>主诉：{esc.patientWords || '—'}</div>
+                    {esc.doctorAdvice && <div><b>医生建议：</b>{esc.doctorAdvice}</div>}
+                    <div className="muted">下次强度：{esc.nextIntensity}</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
           <b className="mt8 block">相关协同事件</b>
           {events.length === 0 ? <Empty>暂无</Empty> : (
             <ul className="mini-list">
@@ -121,7 +145,7 @@ export function PatientDetail({ patientId, onClose }: { patientId: string; onClo
                   <td>{a.equipmentName}</td>
                   <td>{a.therapistName}</td>
                   <td><StatusPill dict={APPT_STATUS} value={a.status} />{a.late && <Pill tone="amber">迟到</Pill>}</td>
-                  <td className="cell-note">{a.session ? `角度${a.session.angle || '—'} 阻力${a.session.resistance || '—'} ${a.session.reps || ''} 心率${a.session.heartRate ?? '—'}` : '—'}</td>
+                  <td className="cell-note">{a.session ? `角度${a.session.angle || '—'} 阻力${a.session.resistance || '—'} ${a.session.reps || ''} 心率${a.session.heartRate ?? '—'}` : '—'}{a.session?.painEscalation && <div className="tip-red">疼痛升级 {a.session.painEscalation.before}→{a.session.painEscalation.peak}（{a.session.painEscalation.actionAngle || '—'}）</div>}</td>
                   <td className="cell-note">{a.feedback?.effect ? `${a.feedback.effect}，疼痛${a.feedback.painAfter ?? '—'}分` : (a.feedback?.cancelReason ? `取消：${a.feedback.cancelReason}` : '—')}{a.feedback?.delayedPain ? `；延迟疼痛${a.feedback.delayedPain.pain}分` : ''}</td>
                 </tr>
               ))}

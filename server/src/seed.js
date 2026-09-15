@@ -46,6 +46,8 @@ export function seedIfEmpty() {
     emergencyName: '张强（儿子）', emergencyPhone: '13800000001',
     doctorOrders: '渐进负重，屈膝角度每周增加10°，避免扭转',
   });
+  // 疼痛升级后打上的动态风险标签（交班知悉后可由治疗师评估解除）
+  db.prepare("UPDATE patients SET risk_tags=? WHERE id=?").run(JSON.stringify(['疼痛高风险（训练中剧烈升高）']), p1.id);
   const p2 = mkPatient({
     name: '刘芳', age: 66, gender: '女', category: 'chronic',
     diagnosis: '冠心病稳定期、高血压2级', rom: '关节活动度正常',
@@ -139,12 +141,16 @@ export function seedIfEmpty() {
     session: { angle: '0-85°', resistance: '被动', reps: '3组×10次', heartRate: 92, painChange: 0, note: '耐受良好' },
     feedback: { effect: '略有改善', painAfter: 3, nextIntervalDays: 1, note: '', at: now, by: '王敏' },
   });
-  mkAppt({
+  // 张伟：昨天训练中疼痛突然升高而中止（演示疼痛升级→处置→交班→下次强度/标签/家属提醒）
+  const apptP1Esc = mkAppt({
     patientId: p1.id, therapistId: t1, equipmentId: e1, planId: plan1, insuranceItem: '运动疗法',
-    date: addDays(today, -1), start: '10:00', duration: 45, status: 'completed',
+    date: addDays(today, -1), start: '10:00', duration: 45, status: 'aborted',
     checkin: { bpSys: 128, bpDia: 82, pain: 4, extra: { 伤口情况: '愈合良好', 肿胀程度: '轻度' }, fit: true, issues: [], at: now, by: '王敏' },
-    session: { angle: '0-90°', resistance: '15Nm', reps: '3组×12次', heartRate: 96, painChange: 1, note: '屈膝角度进展' },
-    feedback: { effect: '略有改善', painAfter: 3, nextIntervalDays: 1, note: '居家踝泵练习已布置', at: now, by: '王敏' },
+    session: {
+      angle: '0-90°', resistance: '15Nm', reps: '第2组第8次', heartRate: 102, painChange: 4, note: '屈膝至约92°时疼痛突然升高，立即暂停',
+      painEscalation: { id: null, before: 4, peak: 8, change: 4, patientWords: '膝盖里面突然刺痛，不敢再弯', actionAngle: '屈膝约92°', at: now },
+      aborted: true, abortReason: '训练中疼痛突然升高（4→8分）：屈膝约92°时膝内刺痛，暂停+冰敷，已通知医生',
+    },
   });
   mkAppt({
     patientId: p1.id, therapistId: t1, equipmentId: e1, planId: plan1, insuranceItem: '运动疗法',
@@ -186,6 +192,46 @@ export function seedIfEmpty() {
   insStep.run(uid(), evId, frontdesk, 'frontdesk', '周婷', '登记迟到', '患者迟到10分钟到场，通知治疗师', now);
   insStep.run(uid(), evId, t1, 'therapist', '王敏', '缩短训练', '当次训练压缩为20分钟，保证治疗剂量', now);
   insStep.run(uid(), evId, frontdesk, 'frontdesk', '周婷', '标记解决', '已告知患者下次提前15分钟到场', now);
+
+  /* ---------- 示例疼痛升级：张伟昨天训练中膝痛突升（4→8），已处置+通知医生，等待下一位治疗师交班知悉 ---------- */
+  const escId = uid();
+  const escAngle = '屈膝约92°';
+  const escWords = '膝盖里面突然刺痛，不敢再弯';
+  const escIntensity = '暂停抗阻/屈膝加压训练，下次以无痛范围被动活动开始；屈膝不超过90°，经医生评估后再进阶';
+  const escFamilyMsg = '本次训练中疼痛一度升至 8 分（较前 +4），已暂停训练并记录诱发角度 屈膝约92°、冰敷处理，已通知医生。下次训练将降低强度，请家属关注居家疼痛/肿胀，出现持续剧痛及时联系中心。';
+  db.prepare(`INSERT INTO pain_escalations(id,patient_id,appointment_id,therapist_id,pain_before,pain_peak,pain_change,
+    patient_words,action_angle,action_pause,action_ice,action_notify_doctor,notify_family,next_intensity,next_interval_days,
+    doctor_advice,doctor_advice_by,doctor_advice_at,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    escId, p1.id, apptP1Esc, t1, 4, 8, 4, escWords, escAngle, 1, 1, 1, 1, escIntensity, 3,
+    '暂停抗阻训练3天，屈膝角度暂不超过90°，局部冰敷每日3次；若静息痛≥6分或出现肿胀发热及时复诊，3天后复评再决定是否进阶。',
+    '骨科 李医生（电话回访）', now, now,
+  );
+  // 回填当次训练记录中的升级快照 id
+  const escAppt = db.prepare('SELECT * FROM appointments WHERE id=?').get(apptP1Esc);
+  const escSession = JSON.parse(escAppt.session);
+  escSession.painEscalation.id = escId;
+  db.prepare('UPDATE appointments SET session=? WHERE id=?').run(JSON.stringify(escSession), apptP1Esc);
+
+  const escEventId = uid();
+  db.prepare(`INSERT INTO events(id,patient_id,appointment_id,plan_id,equipment_id,type,title,status,detail,created_by,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(
+    escEventId, p1.id, apptP1Esc, plan1, e1, 'pain_escalation',
+    '张伟 训练中疼痛升级：4→8 分（+4）', 'open',
+    JSON.stringify({
+      escalationId: escId, level: 'severe', reasons: ['疼痛峰值 8 分 ≥ 8，属剧烈疼痛', '疼痛较训练前突然升高 4 分（阈值 3）'],
+      painBefore: 4, painPeak: 8, painChange: 4, patientWords: escWords, actionAngle: escAngle,
+      actions: { pause: true, ice: true, notifyDoctor: true },
+      notifyFamily: true, familyMessage: escFamilyMsg,
+      nextIntensity: escIntensity, nextIntervalDays: 3,
+      doctorAdvice: '暂停抗阻训练3天，屈膝角度暂不超过90°，局部冰敷每日3次；若静息痛≥6分或出现肿胀发热及时复诊，3天后复评再决定是否进阶。',
+      handoverRequired: true,
+      note: `疼痛 4→8（+4）；患者主诉：${escWords}；诱发角度：${escAngle}`,
+    }), '王敏', now,
+  );
+  insStep.run(uid(), escEventId, t1, 'therapist', '王敏', '现场处置', '暂停：是｜记录角度：屈膝约92°｜冰敷：是｜通知医生：是', now);
+  insStep.run(uid(), escEventId, t1, 'therapist', '王敏', '家属提醒', escFamilyMsg, now);
+  insStep.run(uid(), escEventId, t1, 'therapist', '王敏', '医生建议', '暂停抗阻训练3天，屈膝角度暂不超过90°，局部冰敷每日3次；若静息痛≥6分或出现肿胀发热及时复诊，3天后复评再决定是否进阶。', now);
 
   console.log('[seed] 演示数据已初始化');
 }

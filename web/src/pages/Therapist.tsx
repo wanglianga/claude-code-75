@@ -1,20 +1,25 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store';
-import { api } from '../api';
-import type { Appointment, Patient } from '../types';
+import { api, ApiError } from '../api';
+import type { Appointment, Patient, PainEscalation } from '../types';
 import { APPT_STATUS, WEEKDAYS, todayStr } from '../labels';
 import { Tabs, Section, StatusPill, Pill, RiskBadge, Modal, Field, Empty, AlertList } from '../components/ui';
 import { EventBoard } from '../components/Events';
 import { PatientDetail } from '../components/PatientDetail';
+import {
+  PainJumpBanner, PainEscalationModal, HandoverCard, HandoverPanel,
+  RiskTags, usePatientEscalations, usePendingHandover,
+} from '../components/Pain';
 
 export default function Therapist() {
   const [tab, setTab] = useState('exec');
   return (
     <div>
       <Tabs active={tab} onChange={setTab} items={[
-        ['exec', '今日执行'], ['schedule', '我的日程'], ['patients', '我的患者'], ['events', '协同事件'], ['leave', '请假与排班'],
+        ['exec', '今日执行'], ['handover', '疼痛交班'], ['schedule', '我的日程'], ['patients', '我的患者'], ['events', '协同事件'], ['leave', '请假与排班'],
       ]} />
       {tab === 'exec' && <ExecPanel />}
+      {tab === 'handover' && <HandoverPanel />}
       {tab === 'schedule' && <SchedulePanel />}
       {tab === 'patients' && <MyPatients />}
       {tab === 'events' && <EventBoard />}
@@ -47,6 +52,11 @@ function ExecCard({ appt }: { appt: Appointment }) {
   const [checkinOpen, setCheckinOpen] = useState(false);
   const [completeOpen, setCompleteOpen] = useState(false);
   const [abortOpen, setAbortOpen] = useState(false);
+  const [painOpen, setPainOpen] = useState(false);
+  const [painPeak, setPainPeak] = useState<number | undefined>(undefined);
+  const escalations = usePatientEscalations(appt.patientId);
+  const pendingHandover = usePendingHandover(appt.patientId);
+  const thisEsc = escalations.find((x) => x.appointmentId === appt.id);
   if (!p) return null;
   return (
     <div className="exec-card">
@@ -55,11 +65,17 @@ function ExecCard({ appt }: { appt: Appointment }) {
           <b>{a_time(appt)}</b>　<b>{p.name}</b> <RiskBadge level={p.riskLevel} /> <StatusPill dict={APPT_STATUS} value={appt.status} />
           {appt.late && <Pill tone="amber">迟到</Pill>}
           {p.familyAccompany && <Pill tone="purple">需家属陪同</Pill>}
+          <RiskTags patient={p} />
         </div>
         <div className="muted">{appt.equipmentName} · {appt.duration}分钟 · 医保 {appt.insuranceItem || '自费'}</div>
       </div>
       {appt.riskSnapshot && appt.riskSnapshot.tips.length > 0 && (
-        <div className="tip-inline">{appt.riskSnapshot.tips.slice(0, 3).map((t, i) => <span key={i} className={`tip-${t.level === '禁忌' || t.level === '高风险' ? 'red' : 'gray'}`}>【{t.level}】{t.text}</span>)}</div>
+        <div className="tip-inline">{appt.riskSnapshot.tips.slice(0, 3).map((t, i) => <span key={i} className={`tip-${t.level === '禁忌' || t.level === '高风险' || t.level === '风险标签' ? 'red' : 'gray'}`}>【{t.level}】{t.text}</span>)}</div>
+      )}
+      {pendingHandover && ['scheduled', 'arrived'].includes(appt.status) && (
+        <div className="alert-list tone-red">
+          <div>⚠ 该患者有未交班的疼痛升级事件（{pendingHandover.painBefore}→{pendingHandover.painPeak} 分）：{pendingHandover.patientWords || '患者主诉未记录'}。点击核验开始时必须先阅读交班并知悉，下次训练按「{pendingHandover.nextIntensity}」执行。</div>
+        </div>
       )}
       {appt.status === 'scheduled' && <div className="muted">等待前台登记到场…</div>}
       {appt.status === 'arrived' && (
@@ -69,12 +85,25 @@ function ExecCard({ appt }: { appt: Appointment }) {
       )}
       {appt.status === 'in_progress' && (
         <>
-          <SessionForm appt={appt} patient={p} />
+          <SessionForm appt={appt} patient={p} onPainJump={(peak) => { setPainPeak(peak); setPainOpen(true); }} />          {thisEsc && (
+            <div className="note-box pain-esc-record">
+              <Pill tone="red">本次已记录疼痛升级</Pill>
+              疼痛 {thisEsc.painBefore}→{thisEsc.painPeak}（+{thisEsc.painChange}）｜诱发角度 {thisEsc.actionAngle || '—'}｜
+              暂停{thisEsc.actionPause ? '✓' : '✗'} 冰敷{thisEsc.actionIce ? '✓' : '✗'} 通知医生{thisEsc.actionNotifyDoctor ? '✓' : '✗'}
+              {thisEsc.doctorAdvice ? <div>医生建议：{thisEsc.doctorAdvice}</div> : <div className="muted">医生建议可在「疼痛交班」中补录</div>}
+            </div>
+          )}
           <div className="row-actions mt8">
             <button className="btn btn-primary" onClick={() => setCompleteOpen(true)}>完成训练并填写反馈</button>
             <button className="btn btn-danger" onClick={() => setAbortOpen(true)}>异常中止</button>
           </div>
         </>
+      )}
+      {appt.status === 'aborted' && (
+        <div className="note-box">
+          已中止：{appt.session?.abortReason || '—'}
+          {thisEsc && <div className="mt4">疼痛升级已进入交班（{thisEsc.painBefore}→{thisEsc.painPeak} 分），下一位治疗师核验时需知悉。</div>}
+        </div>
       )}
       {appt.status === 'completed' && appt.feedback && (
         <div className="note-box">已完成：疗效 {appt.feedback.effect || '—'}，训练后疼痛 {appt.feedback.painAfter ?? '—'} 分{appt.feedback.note ? `；${appt.feedback.note}` : ''}</div>
@@ -82,23 +111,28 @@ function ExecCard({ appt }: { appt: Appointment }) {
       {checkinOpen && <CheckinModal appt={appt} patient={p} onClose={() => setCheckinOpen(false)} />}
       {completeOpen && <CompleteModal appt={appt} onClose={() => setCompleteOpen(false)} />}
       {abortOpen && <AbortModal appt={appt} onClose={() => setAbortOpen(false)} />}
+      {painOpen && <PainEscalationModal appt={appt} patient={p} defaultPeak={painPeak} onClose={() => { setPainOpen(false); setPainPeak(undefined); }} />}
     </div>
   );
 }
 
 const a_time = (a: Appointment) => `${a.date} ${a.start}`;
 
-/* ---------------- 到场核验（按人群呈现评估项；高风险需三项确认） ---------------- */
+/* ---------------- 到场核验（按人群呈现评估项；高风险需三项确认；疼痛升级需交班知悉） ---------------- */
 function CheckinModal({ appt, patient, onClose }: { appt: Appointment; patient: Patient; onClose: () => void }) {
   const { call, meta } = useStore();
+  const pendingEsc = usePendingHandover(patient.id);
   const cat = meta?.categories[patient.category];
   const [v, setV] = useState({ bpSys: '', bpDia: '', heartRate: '', spo2: '', pain: String(patient.painScore), notes: '' });
   const [extra, setExtra] = useState<Record<string, string>>({});
   const [fit, setFit] = useState<'yes' | 'no'>('yes');
   const [confirms, setConfirms] = useState({ doctor: false, family: appt.familyConsent, emergency: false });
   const [issues, setIssues] = useState<string[]>([]);
+  const [handoverAck, setHandoverAck] = useState(false);
+  const [handoverNote, setHandoverNote] = useState('');
   const highRisk = patient.riskLevel === '高';
   const allConfirmed = !highRisk || (confirms.doctor && confirms.family && confirms.emergency);
+  const needHandover = !!pendingEsc && !handoverAck;
 
   const submit = async () => {
     const body = {
@@ -109,11 +143,20 @@ function CheckinModal({ appt, patient, onClose }: { appt: Appointment; patient: 
       },
       fit: fit === 'yes',
       confirms,
+      handoverAck: !!handoverAck,
+      handoverNote,
     };
     const ok = await call(async () => {
-      const r = await api<{ fit: boolean; issues: string[] }>(`/appointments/${appt.id}/checkin`, { body });
-      if (r.issues?.length) setIssues(r.issues);
-      return r;
+      try {
+        const r = await api<{ fit: boolean; issues: string[] }>(`/appointments/${appt.id}/checkin`, { body });
+        if (r.issues?.length) setIssues(r.issues);
+        return r;
+      } catch (e) {
+        if (e instanceof ApiError && e.code === 'HANDOVER_REQUIRED') {
+          throw new Error('请先阅读并知悉疼痛升级交班记录，再开始训练');
+        }
+        throw e;
+      }
     }, fit === 'yes' ? '核验通过，训练开始' : '已标记不适合当天训练并生成协同事件');
     if (ok) onClose();
   };
@@ -124,6 +167,9 @@ function CheckinModal({ appt, patient, onClose }: { appt: Appointment; patient: 
         人群评估项（{cat?.label}）：{cat?.checkinItems.join('、')}　｜　禁忌：{patient.contraindications.join('、') || '无'}
         {patient.doctorOrders && <div>医嘱：{patient.doctorOrders}</div>}
       </div>
+      {pendingEsc && (
+        <HandoverCard esc={pendingEsc} ack={handoverAck} setAck={setHandoverAck} note={handoverNote} setNote={setHandoverNote} />
+      )}
       <div className="grid3">
         <Field label="收缩压 mmHg"><input type="number" value={v.bpSys} onChange={(e) => setV({ ...v, bpSys: e.target.value })} /></Field>
         <Field label="舒张压 mmHg"><input type="number" value={v.bpDia} onChange={(e) => setV({ ...v, bpDia: e.target.value })} /></Field>
@@ -205,17 +251,18 @@ function CheckinModal({ appt, patient, onClose }: { appt: Appointment; patient: 
       {fit === 'no' && <Field label="不适合原因"><input value={v.notes} onChange={(e) => setV({ ...v, notes: e.target.value })} placeholder="如：血压偏高，建议复诊" /></Field>}
       {issues.length > 0 && <AlertList items={issues} tone="amber" />}
       <div className="row-actions">
-        <button className="btn btn-primary" disabled={fit === 'yes' && !allConfirmed} onClick={submit}>
+        <button className="btn btn-primary" disabled={(fit === 'yes' && !allConfirmed) || needHandover} onClick={submit}>
           {fit === 'yes' ? '核验通过，开始训练' : '确认不适合并取消'}
         </button>
         {fit === 'yes' && !allConfirmed && <span className="muted">请先完成高风险三项确认</span>}
+        {needHandover && <span className="muted">请先勾选上方疼痛升级交班知悉</span>}
       </div>
     </Modal>
   );
 }
 
-/* ---------------- 训练中记录（实时风险告警） ---------------- */
-function SessionForm({ appt, patient }: { appt: Appointment; patient: Patient }) {
+/* ---------------- 训练中记录（实时风险告警 + 疼痛升级处理入口） ---------------- */
+function SessionForm({ appt, patient, onPainJump }: { appt: Appointment; patient: Patient; onPainJump: (peak?: number) => void }) {
   const { call, meta } = useStore();
   const s = appt.session || {};
   const [f, setF] = useState({
@@ -228,7 +275,7 @@ function SessionForm({ appt, patient }: { appt: Appointment; patient: Patient })
   const hrNum = Number(f.heartRate) || 0;
   const liveAlerts: string[] = [];
   if (hrNum > hrLimit) liveAlerts.push(`心率 ${hrNum} 超过安全阈值 ${hrLimit}，请降低强度或中止`);
-  if (Number(f.painChange) >= 3) liveAlerts.push('疼痛较训练前加重≥3分，建议中止并评估');
+  if (Number(f.painChange) >= 3) liveAlerts.push('疼痛较训练前加重≥3分：请暂停、记录动作角度、冰敷并评估是否通知医生，填写疼痛升级处理单');
 
   const save = async () => {
     await call(async () => {
@@ -239,11 +286,15 @@ function SessionForm({ appt, patient }: { appt: Appointment; patient: Patient })
     }, '训练记录已保存');
   };
 
+  const beforePain = appt.checkin?.pain ?? patient.painScore;
+  const peakFromChange = Number(beforePain) + Number(f.painChange || 0);
+
   return (
     <div className="session-form">
-      <div className="muted mb4">记录项（{cat?.label}）：{cat?.sessionFields.join('、')}　｜　心率安全阈值：<b>{hrLimit}</b> 次/分</div>
+      <PainJumpBanner appt={appt} patient={patient} onOpen={(peak) => onPainJump(peak)} />
+      <div className="muted mb4 mt8">记录项（{cat?.label}）：{cat?.sessionFields.join('、')}　｜　心率安全阈值：<b>{hrLimit}</b> 次/分</div>
       <div className="grid3">
-        <Field label="关节角度"><input value={f.angle} onChange={(e) => setF({ ...f, angle: e.target.value })} placeholder="如 0-95°" /></Field>
+        <Field label="关节角度"><input value={f.angle} onChange={(e) => setF({ ...f, angle: e.target.value })} placeholder="如 0-95°（疼痛突升时记录诱发角度）" /></Field>
         <Field label="阻力/负荷"><input value={f.resistance} onChange={(e) => setF({ ...f, resistance: e.target.value })} placeholder="如 15Nm / 40W" /></Field>
         <Field label="次数/组数"><input value={f.reps} onChange={(e) => setF({ ...f, reps: e.target.value })} placeholder="如 3组×12次" /></Field>
         <Field label={`心率（阈值 ${hrLimit}）`}><input type="number" value={f.heartRate} onChange={(e) => setF({ ...f, heartRate: e.target.value })} /></Field>
@@ -251,6 +302,11 @@ function SessionForm({ appt, patient }: { appt: Appointment; patient: Patient })
         <Field label="备注"><input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} /></Field>
       </div>
       <AlertList items={[...liveAlerts, ...alerts]} tone="red" />
+      {Number(f.painChange) >= 3 && (
+        <div className="row-actions mb4">
+          <button className="btn btn-danger" onClick={() => onPainJump(peakFromChange)}>立即填写疼痛升级处理单</button>
+        </div>
+      )}
       <button className="btn" onClick={save}>保存训练记录</button>
     </div>
   );

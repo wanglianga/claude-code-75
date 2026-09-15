@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS patients (
   emergency_name TEXT,
   emergency_phone TEXT,
   doctor_orders TEXT,
+  risk_tags TEXT,
   status TEXT DEFAULT 'active',
   created_at TEXT
 );
@@ -110,6 +111,33 @@ CREATE TABLE IF NOT EXISTS events (
   created_by TEXT,
   created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS pain_escalations (
+  id TEXT PRIMARY KEY,
+  patient_id TEXT NOT NULL,
+  appointment_id TEXT NOT NULL,
+  therapist_id TEXT NOT NULL,
+  pain_before INTEGER NOT NULL,
+  pain_peak INTEGER NOT NULL,
+  pain_change INTEGER NOT NULL,
+  patient_words TEXT,
+  action_angle TEXT,
+  action_pause INTEGER DEFAULT 0,
+  action_ice INTEGER DEFAULT 0,
+  action_notify_doctor INTEGER DEFAULT 0,
+  notify_family INTEGER DEFAULT 0,
+  next_intensity TEXT,
+  next_interval_days INTEGER,
+  doctor_advice TEXT,
+  doctor_advice_by TEXT,
+  doctor_advice_at TEXT,
+  handover_ack_by TEXT,
+  handover_ack_name TEXT,
+  handover_ack_at TEXT,
+  closed_at TEXT,
+  closed_by TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_escal_patient ON pain_escalations(patient_id);
 CREATE TABLE IF NOT EXISTS event_steps (
   id TEXT PRIMARY KEY,
   event_id TEXT NOT NULL,
@@ -124,6 +152,10 @@ CREATE INDEX IF NOT EXISTS idx_appt_patient ON appointments(patient_id);
 CREATE INDEX IF NOT EXISTS idx_appt_date ON appointments(date);
 CREATE INDEX IF NOT EXISTS idx_events_patient ON events(patient_id);
 `);
+
+// 旧数据卷轻量迁移：补齐新增列（IF NOT EXISTS 不支持 ADD COLUMN）
+const patientCols = db.prepare('PRAGMA table_info(patients)').all().map((c) => c.name);
+if (!patientCols.includes('risk_tags')) db.exec('ALTER TABLE patients ADD COLUMN risk_tags TEXT');
 
 export default db;
 
@@ -147,7 +179,8 @@ export function mapPatient(r) {
     familyAccompany: !!r.family_accompany, insuranceItems: J(r.insurance_items, []),
     therapistId: r.therapist_id || null, riskLevel: r.risk_level || '低',
     emergencyName: r.emergency_name || '', emergencyPhone: r.emergency_phone || '',
-    doctorOrders: r.doctor_orders || '', status: r.status || 'active', createdAt: r.created_at,
+    doctorOrders: r.doctor_orders || '', riskTags: J(r.risk_tags, []),
+    status: r.status || 'active', createdAt: r.created_at,
   };
 }
 
@@ -193,5 +226,25 @@ export function mapEvent(r, steps = []) {
     type: r.type, title: r.title, status: r.status, detail: J(r.detail, {}),
     createdBy: r.created_by || '', createdAt: r.created_at,
     patientName: r.patient_name || null, steps,
+  };
+}
+
+export function mapEscalation(r) {
+  if (!r) return null;
+  return {
+    id: r.id, patientId: r.patient_id, appointmentId: r.appointment_id, therapistId: r.therapist_id,
+    painBefore: r.pain_before, painPeak: r.pain_peak, painChange: r.pain_change,
+    patientWords: r.patient_words || '',
+    actionPause: !!r.action_pause, actionAngle: r.action_angle || '',
+    actionIce: !!r.action_ice, actionNotifyDoctor: !!r.action_notify_doctor,
+    notifyFamily: !!r.notify_family,
+    nextIntensity: r.next_intensity || '', nextIntervalDays: r.next_interval_days ?? null,
+    doctorAdvice: r.doctor_advice || '', doctorAdviceBy: r.doctor_advice_by || '', doctorAdviceAt: r.doctor_advice_at || null,
+    handoverAckBy: r.handover_ack_by || null, handoverAckName: r.handover_ack_name || '', handoverAckAt: r.handover_ack_at || null,
+    closedAt: r.closed_at || null, closedBy: r.closed_by || '',
+    createdAt: r.created_at,
+    // 联表补充（getEscalationsWithNames 填充）
+    patientName: r.patient_name || undefined, therapistName: r.therapist_name || undefined,
+    date: r.date || undefined, start: r.start || undefined, equipmentName: r.equipment_name || undefined,
   };
 }

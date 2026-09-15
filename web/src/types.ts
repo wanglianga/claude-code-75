@@ -30,6 +30,7 @@ export interface Patient {
   emergencyName: string;
   emergencyPhone: string;
   doctorOrders: string;
+  riskTags: string[];
   status: string;
   createdAt: string;
 }
@@ -71,7 +72,43 @@ export interface Checkin {
 export interface SessionRec {
   angle?: string; resistance?: string; reps?: string; heartRate?: number;
   painChange?: number; note?: string; aborted?: boolean; abortReason?: string;
+  painEscalation?: {
+    id: string | null; before: number; peak: number; change: number;
+    patientWords?: string; actionAngle?: string; at?: string;
+  };
   updatedAt?: string; by?: string;
+}
+
+export interface PainEscalation {
+  id: string;
+  patientId: string;
+  appointmentId: string;
+  therapistId: string;
+  painBefore: number;
+  painPeak: number;
+  painChange: number;
+  patientWords: string;
+  actionPause: boolean;
+  actionAngle: string;
+  actionIce: boolean;
+  actionNotifyDoctor: boolean;
+  notifyFamily: boolean;
+  nextIntensity: string;
+  nextIntervalDays: number | null;
+  doctorAdvice: string;
+  doctorAdviceBy: string;
+  doctorAdviceAt: string | null;
+  handoverAckBy: string | null;
+  handoverAckName: string;
+  handoverAckAt: string | null;
+  closedAt: string | null;
+  closedBy: string;
+  createdAt: string;
+  patientName?: string;
+  therapistName?: string;
+  date?: string;
+  start?: string;
+  equipmentName?: string;
 }
 
 export interface DelayedPain { pain: number; note: string; at: string }
@@ -161,6 +198,7 @@ export interface Bootstrap {
   patients: Patient[];
   appointments: Appointment[];
   events: RehabEvent[];
+  escalations: PainEscalation[];
   equipment: Equipment[];
   plans: Plan[];
   therapists: TherapistInfo[];

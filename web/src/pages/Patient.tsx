@@ -4,6 +4,7 @@ import { api } from '../api';
 import type { Appointment } from '../types';
 import { APPT_STATUS, PLAN_STATUS, todayStr, fmtDT } from '../labels';
 import { Tabs, Section, StatusPill, Pill, RiskBadge, Modal, Field, Empty, Timeline } from '../components/ui';
+import { PainEscalationNotice, RiskTags } from '../components/Pain';
 
 export default function PatientPage() {
   const [tab, setTab] = useState('appts');
@@ -27,15 +28,19 @@ function useMe() {
   return { data, me };
 }
 
-/** 延迟疼痛触发的复诊建议横幅 */
+/** 延迟疼痛/训练中疼痛升级触发的复诊建议横幅 */
 function FollowupBanner() {
   const { data, user } = useStore();
-  const open = (data?.events || []).filter((e) => e.patientId === user?.patientId
-    && (e.type === 'delayed_pain' || e.type === 'pain_aggravation') && e.status !== 'resolved' && e.detail?.followup);
+  const open = (data?.events || []).filter((e) => {
+    if (e.patientId !== user?.patientId || e.status === 'resolved') return false;
+    if (e.type === 'delayed_pain' || e.type === 'pain_aggravation') return !!e.detail?.followup;
+    if (e.type === 'pain_escalation') return !!e.detail?.actions?.notifyDoctor;
+    return false;
+  });
   if (!open.length) return null;
   return (
     <div className="alert-list tone-red mb8">
-      {open.map((e) => <div key={e.id}>⚠ 复诊建议：{e.title}。请及时联系治疗师或复诊，中心会同步跟进。</div>)}
+      {open.map((e) => <div key={e.id}>⚠ {e.type === 'pain_escalation' ? '训练中疼痛升级，已通知医生，' : ''}复诊建议：{e.title}。请及时联系治疗师或复诊，中心会同步跟进。</div>)}
     </div>
   );
 }
@@ -53,6 +58,7 @@ function MyAppointments() {
   const history = list.filter((a) => !upcoming.includes(a));
   return (
     <Section title="我的预约">
+      <PainEscalationNotice patientId={me.id} />
       <b>待训练</b>
       {upcoming.length === 0 ? <Empty>暂无待训练预约，请联系前台预约</Empty> : (
         <table className="table mt4">
@@ -77,7 +83,7 @@ function MyAppointments() {
               <tr key={a.id}>
                 <td>{a.date} {a.start}</td><td>{a.equipmentName}</td>
                 <td><StatusPill dict={APPT_STATUS} value={a.status} /></td>
-                <td className="cell-note">{a.session ? `${a.session.angle || ''} ${a.session.resistance || ''} ${a.session.reps || ''}` : (a.feedback?.cancelReason ? `取消：${a.feedback.cancelReason}` : '—')}</td>
+                <td className="cell-note">{a.session ? `${a.session.angle || ''} ${a.session.resistance || ''} ${a.session.reps || ''}` : (a.feedback?.cancelReason ? `取消：${a.feedback.cancelReason}` : '—')}{a.session?.painEscalation && <div className="tip-red">训练中疼痛升级 {a.session.painEscalation.before}→{a.session.painEscalation.peak}（{a.session.painEscalation.actionAngle || '—'}），已进入交班</div>}{a.session?.abortReason && <div className="muted">中止：{a.session.abortReason}</div>}</td>
                 <td className="cell-note">{a.feedback?.effect ? `${a.feedback.effect}，疼痛${a.feedback.painAfter ?? '—'}分` : '—'}{a.feedback?.delayedPain && `；延迟疼痛${a.feedback.delayedPain.pain}分已反馈`}</td>
               </tr>
             ))}
@@ -180,6 +186,7 @@ function MyRisk() {
       <div className="patient-strip">
         <span><b>{me.name}</b> <Pill tone="blue">{cat?.label}</Pill> <RiskBadge level={me.riskLevel} /></span>
         <span>当前疼痛 {me.painScore} 分</span>
+        <RiskTags patient={me} />
         {me.familyAccompany && <Pill tone="purple">需家属陪同</Pill>}
       </div>
       <b>禁忌动作</b>

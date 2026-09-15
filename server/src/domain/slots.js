@@ -14,7 +14,7 @@ export function overlaps(aStart, aDur, bStart, bDur) {
  */
 export function generateSlots({
   patient, equipment, therapistId, schedules, leaves, appointments,
-  lastFeedback, days = 7, duration,
+  lastFeedback, escalations = [], days = 7, duration,
 }) {
   const cfg = CATEGORIES[patient.category] || {};
   const dur = duration || cfg.defaultDuration || 45;
@@ -47,6 +47,32 @@ export function generateSlots({
     }
     const candidate = addDays(lastFeedback.date, interval);
     if (candidate > minDate) minDate = candidate;
+  }
+
+  // 训练中疼痛升级：决定最小间隔，且未交班知悉时不只是「看预约状态」——明确提示下次训练前必须先阅读交班
+  const escByTime = [...(escalations || [])]
+    .map((x) => ({
+      pain_before: x.pain_before ?? x.painBefore, pain_peak: x.pain_peak ?? x.painPeak,
+      next_interval_days: x.next_interval_days ?? x.nextIntervalDays,
+      next_intensity: x.next_intensity ?? x.nextIntensity,
+      handover_ack_at: x.handover_ack_at ?? x.handoverAckAt, closed_at: x.closed_at ?? x.closedAt,
+      appointment_id: x.appointment_id ?? x.appointmentId, created_at: x.created_at ?? x.createdAt,
+    }))
+    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  const lastEsc = escByTime[0];
+  if (lastEsc) {
+    // 优先取本次预约窗口内的预约日期，否则以升级发生日期为基准
+    const escAppt = appointments.find((ap) => ap.id === lastEsc.appointment_id);
+    const baseDate = escAppt?.date || String(lastEsc.created_at).slice(0, 10) || todayStr();
+    const interval = Math.max(cfg.minIntervalDays ?? 1, Number(lastEsc.next_interval_days) || 1);
+    const candidate = addDays(baseDate, interval);
+    if (candidate > minDate) minDate = candidate;
+    const acked = !!lastEsc.handover_ack_at || !!lastEsc.closed_at;
+    if (!acked) {
+      warnings.push(`最近一次训练中疼痛升级（${lastEsc.pain_before}→${lastEsc.pain_peak} 分）尚未完成交班知悉：下次训练核验时治疗师必须先阅读中止原因、患者主诉与医生建议，并按「${lastEsc.next_intensity || '降低强度'}」执行`);
+    } else if (lastEsc.pain_peak >= 6) {
+      warnings.push(`上次训练曾出现疼痛升级（峰值 ${lastEsc.pain_peak} 分），已交班知悉，下次仍建议从低强度开始`);
+    }
   }
 
   // 医保次数提示

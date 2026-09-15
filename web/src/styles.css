@@ -227,3 +227,39 @@ textarea { resize: vertical; }
 .toast { padding: 10px 16px; border-radius: 10px; font-size: 13px; box-shadow: 0 8px 24px rgba(0, 0, 0, .12); cursor: pointer; max-width: 360px; }
 .toast-ok { background: #ecfdf5; color: #065f46; border: 1px solid #6ee7b7; }
 .toast-err { background: #fef2f2; color: var(--red); border: 1px solid #fca5a5; }
+
+/* ---------- 训练中疼痛升级 ---------- */
+.risk-tags { display: inline-flex; gap: 4px; flex-wrap: wrap; margin-left: 6px; }
+.row-flags, .row-flag-wrap { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.pain-num { color: var(--red); font-size: 15px; }
+.pain-change { color: var(--red); font-size: 12px; white-space: nowrap; }
+
+.pain-jump { border: 1px solid #fca5a5; background: #fff7f7; border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.pain-jump-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--red); flex-wrap: wrap; }
+.pain-jump-actions { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; margin: 8px 0; color: #7f1d1d; }
+.pain-jump-entry { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.pain-jump-entry .field { margin-bottom: 0; }
+.pain-change-box { min-height: 28px; display: flex; align-items: center; }
+.pain-checks { display: flex; flex-direction: column; justify-content: center; }
+.pain-esc-record { border-left: 3px solid var(--red); }
+
+/* ---------- 交班 ---------- */
+.handover-card { border: 1px solid #fca5a5; background: #fff7f7; border-radius: 10px; padding: 12px 14px; margin: 10px 0; }
+.handover-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--red); flex-wrap: wrap; }
+.handover-card .table th { color: var(--muted); width: 110px; }
+.handover-list { display: flex; flex-direction: column; gap: 12px; }
+.handover-item { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: #fff; }
+.handover-item.is-pending { border-color: #fca5a5; background: #fffafa; }
+.handover-item.is-done { opacity: .85; }
+.handover-item-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.handover-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; font-size: 13px; margin-bottom: 6px; }
+@media (max-width: 960px) { .handover-grid { grid-template-columns: 1fr; } }
+.handover-ack { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.handover-ack input { flex: 1; min-width: 200px; }
+.handover-ack .check-row { margin: 0; }
+.doctor-advice { border-left: 3px solid var(--primary); background: #f0fdfa; }
+.doctor-advice-form { margin: 6px 0; }
+.handover-mini { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
+.handover-mini-item { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; line-height: 1.7; }
+.handover-mini-item.is-pending { border-color: #fca5a5; background: #fffafa; }
+.pain-event .table th { color: var(--muted); }

@@ -4,6 +4,7 @@ import { api } from '../api';
 import { APPT_STATUS, PLAN_STATUS, todayStr, fmtDT } from '../labels';
 import { Tabs, Section, StatusPill, Pill, RiskBadge, Field, Empty, Timeline, KV } from '../components/ui';
 import { EventBoard } from '../components/Events';
+import { PainEscalationNotice, RiskTags } from '../components/Pain';
 
 export default function FamilyPage() {
   const [tab, setTab] = useState('overview');
@@ -33,9 +34,11 @@ function Overview() {
   const activePlan = data.plans.find((p) => p.patientId === patient.id && p.status === 'active');
   return (
     <Section title="关联患者概况">
+      <PainEscalationNotice patientId={patient.id} />
       <div className="patient-strip">
         <span><b>{patient.name}</b> <Pill tone="blue">{cat?.label}</Pill> <RiskBadge level={patient.riskLevel} /></span>
         <span>疼痛 {patient.painScore} 分</span>
+        <RiskTags patient={patient} />
         {patient.familyAccompany && <Pill tone="purple">需家属陪同</Pill>}
       </div>
       <div className="kv-grid">

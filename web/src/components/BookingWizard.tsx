@@ -4,6 +4,7 @@ import { api, ApiError } from '../api';
 import type { SlotResult } from '../types';
 import { Section, Field, Pill, RiskBadge, AlertList, Empty } from './ui';
 import { EQUIP_STATUS } from '../labels';
+import { RiskTags } from './Pain';
 
 /**
  * 预约向导：选择患者 → 器械 → 时长 → 生成可预约时段 → 确认
@@ -104,6 +105,7 @@ export function BookingWizard() {
       {patient && (
         <div className="patient-strip">
           <span><b>{patient.name}</b> <Pill tone="blue">{cat?.label}</Pill> <RiskBadge level={patient.riskLevel} /></span>
+          <RiskTags patient={patient} />
           <span>疼痛 {patient.painScore} 分</span>
           <span>禁忌：{patient.contraindications.join('、') || '无'}</span>
           <span>医保：{patient.insuranceItems.map((it) => `${it.name} ${it.used}/${it.total}`).join('；') || '无'}</span>

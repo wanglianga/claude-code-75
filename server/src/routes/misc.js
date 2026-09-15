@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import db, {
-  mapPatient, mapEquipment, mapPlan, mapAppointment, mapEvent, mapStep,
+  mapPatient, mapEquipment, mapPlan, mapAppointment, mapEvent, mapStep, mapEscalation,
 } from '../db.js';
 import { authRequired, requireRole } from '../auth.js';
 import { CATEGORIES, EVENT_TYPES, ROLE_LABELS, EQUIPMENT_TYPES } from '../domain/population.js';
@@ -63,10 +63,22 @@ router.get('/bootstrap', authRequired, (req, res) => {
     ? db.prepare('SELECT * FROM plans WHERE patient_id=? ORDER BY version DESC').all(pid)
     : db.prepare('SELECT * FROM plans ORDER BY created_at DESC').all();
 
+  const escBase = `SELECT pe.*, p.name patient_name, t.name therapist_name,
+    a.date AS date, a.start AS start, e.name equipment_name
+    FROM pain_escalations pe
+    JOIN patients p ON p.id=pe.patient_id
+    LEFT JOIN users t ON t.id=pe.therapist_id
+    JOIN appointments a ON a.id=pe.appointment_id
+    LEFT JOIN equipment e ON e.id=a.equipment_id`;
+  const escalations = scoped
+    ? db.prepare(`${escBase} WHERE pe.patient_id=? ORDER BY pe.created_at DESC`).all(pid)
+    : db.prepare(`${escBase} ORDER BY pe.created_at DESC`).all();
+
   res.json({
     patients: patients.map(mapPatient),
     appointments: appointments.map(mapAppointment),
     events: eventRows.map((e) => mapEvent(e, stepsByEvent[e.id] || [])),
+    escalations: escalations.map(mapEscalation),
     equipment: db.prepare('SELECT * FROM equipment ORDER BY name').all().map(mapEquipment),
     plans: plans.map(mapPlan),
     therapists: therapistsInfo(),

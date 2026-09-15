@@ -30,6 +30,9 @@ export function riskTipsFor(p) {
     tips.unshift({ level: '禁忌', text: `禁忌动作：${p.contraindications.join('、')}` });
   }
   if (p.familyAccompany) tips.unshift({ level: '陪同', text: '需家属陪同训练，到场核验时确认家属在场' });
+  for (const t of (p.riskTags || p.risk_tags || [])) {
+    tips.unshift({ level: '风险标签', text: t });
+  }
   if (p.riskLevel === '高' || p.risk_level === '高') {
     tips.unshift({ level: '高风险', text: '高风险患者：训练前须确认医生医嘱、家属知情与紧急联系人' });
   }

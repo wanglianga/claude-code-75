@@ -58,6 +58,7 @@ export const EVENT_TYPES = {
   family_intensity: { label: '家属要求加量', roles: ['family', 'therapist'] },
   equipment_fault: { label: '器械故障', roles: ['maintenance', 'frontdesk', 'therapist'] },
   pain_aggravation: { label: '训练后疼痛加重', roles: ['therapist', 'patient'] },
+  pain_escalation: { label: '训练中疼痛升级', roles: ['therapist', 'frontdesk', 'patient', 'family'] },
   insurance_shortage: { label: '医保次数不足', roles: ['frontdesk', 'patient'] },
   therapist_leave: { label: '治疗师临时请假', roles: ['therapist', 'frontdesk'] },
   delayed_pain: { label: '延迟疼痛反馈', roles: ['patient', 'therapist'] },

@@ -1,4 +1,4 @@
-import db, { mapPatient, mapAppointment } from './db.js';
+import db, { mapPatient, mapAppointment, mapEscalation } from './db.js';
 import { uid, nowIso } from './util.js';
 
 export function addStep(eventId, user, action, note = '') {
@@ -55,4 +55,29 @@ export function autoStepForAppointment(appointmentId, types, user, action, note)
   const rows = db.prepare(`SELECT * FROM events WHERE appointment_id=? AND status!='resolved'`).all(appointmentId)
     .filter((e) => types.includes(e.type));
   for (const e of rows) addStep(e.id, user, action, note);
+}
+
+/* ---------------- 疼痛升级 ---------------- */
+
+export function getEscalationRow(id) {
+  return db.prepare('SELECT * FROM pain_escalations WHERE id=?').get(id);
+}
+
+/** 某患者最近一次未闭环（未交班知悉）的疼痛升级 */
+export function pendingEscalationOf(patientId) {
+  return db.prepare(`SELECT * FROM pain_escalations
+    WHERE patient_id=? AND handover_ack_at IS NULL AND closed_at IS NULL
+    ORDER BY created_at DESC LIMIT 1`).get(patientId);
+}
+
+/** 升级事件（联表患者/预约/治疗师信息，供交班与 bootstrap 使用） */
+export function getEscalationsWithNames(where = '', params = []) {
+  return db.prepare(`SELECT pe.*, p.name patient_name, t.name therapist_name,
+      a.date AS date, a.start AS start, e.name equipment_name
+    FROM pain_escalations pe
+    JOIN patients p ON p.id=pe.patient_id
+    LEFT JOIN users t ON t.id=pe.therapist_id
+    JOIN appointments a ON a.id=pe.appointment_id
+    LEFT JOIN equipment e ON e.id=a.equipment_id
+    ${where} ORDER BY pe.created_at DESC`).all(...params).map(mapEscalation);
 }

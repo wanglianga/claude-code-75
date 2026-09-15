@@ -7,6 +7,7 @@ import { Tabs, Section, StatusPill, Pill, RiskBadge, Modal, Field, Empty } from 
 import { BookingWizard } from '../components/BookingWizard';
 import { EventBoard } from '../components/Events';
 import { PatientDetail } from '../components/PatientDetail';
+import { RiskTags, usePendingHandover } from '../components/Pain';
 
 export default function FrontDesk() {
   const [tab, setTab] = useState('today');
@@ -47,7 +48,7 @@ function TodayPanel() {
               return (
                 <tr key={a.id}>
                   <td>{a.start}（{a.duration}分钟）</td>
-                  <td>{a.patientName}{a.late && <Pill tone="amber">迟到</Pill>}</td>
+                  <td>{a.patientName}{a.late && <Pill tone="amber">迟到</Pill>}<div className="row-flag-wrap"><PatientFlags patientId={a.patientId} /></div></td>
                   <td>{p ? <CatLabel k={p.category} /> : '—'}</td>
                   <td>{p && <RiskBadge level={p.riskLevel} />}</td>
                   <td>{a.equipmentName}</td>
@@ -114,6 +115,20 @@ function CancelModal({ appt, onClose }: { appt: Appointment; onClose: () => void
 export function CatLabel({ k }: { k: string }) {
   const meta = useStore((s) => s.meta);
   return <span>{meta?.categories[k]?.label || k}</span>;
+}
+
+/** 患者风险标签 + 疼痛交班待知悉标记（前台日程可见，便于到场时提醒治疗师） */
+export function PatientFlags({ patientId }: { patientId: string }) {
+  const data = useStore((s) => s.data);
+  const p = data?.patients.find((x) => x.id === patientId);
+  const pending = usePendingHandover(patientId);
+  if (!data || !p) return null;
+  return (
+    <span className="row-flags">
+      <RiskTags patient={p} />
+      {pending && <Pill tone="red">疼痛交班待治疗师知悉（{pending.painBefore}→{pending.painPeak}分）</Pill>}
+    </span>
+  );
 }
 
 /* ---------------- 患者建档 ---------------- */
@@ -204,7 +219,7 @@ function IntakePanel() {
               const ins0 = p.insuranceItems[0];
               return (
                 <tr key={p.id}>
-                  <td>{p.name}</td>
+                  <td>{p.name}{p.riskTags?.length > 0 && <div className="row-flag-wrap"><RiskTags patient={p} /></div>}</td>
                   <td><CatLabel k={p.category} /></td>
                   <td><RiskBadge level={p.riskLevel} /></td>
                   <td>{p.painScore} 分</td>

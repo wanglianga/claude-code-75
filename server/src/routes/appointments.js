@@ -6,8 +6,9 @@ import { evaluateCheckin, evaluateSession, riskTipsFor } from '../domain/risk.js
 import { CATEGORIES } from '../domain/population.js';
 import {
   createEvent, addStep, getPatient, getAppointmentRow, getAppointment,
-  activePlanOf, lastCompletedOf, autoStepForAppointment,
+  activePlanOf, lastCompletedOf, autoStepForAppointment, pendingEscalationOf,
 } from '../helpers.js';
+import { acknowledgeEscalation } from './pain.js';
 import { uid, nowIso, todayStr, addDays } from '../util.js';
 
 const router = Router();
@@ -30,6 +31,7 @@ function loadSlotContext(patientId, equipmentId) {
     leaves: db.prepare('SELECT * FROM therapist_leaves WHERE therapist_id=?').all(therapistId),
     appointments: db.prepare(`SELECT * FROM appointments WHERE date>=? AND date<=? AND status IN ${ACTIVE}
       AND (therapist_id=? OR equipment_id=?)`).all(from, to, therapistId, equipmentId),
+    escalations: db.prepare('SELECT * FROM pain_escalations WHERE patient_id=? ORDER BY created_at DESC').all(patientId),
   };
 }
 
@@ -47,6 +49,7 @@ router.post('/slots', (req, res) => {
     schedules: ctx.schedules,
     leaves: ctx.leaves,
     appointments: ctx.appointments,
+    escalations: ctx.escalations,
     lastFeedback,
     duration: duration ? Number(duration) : undefined,
   });
@@ -152,11 +155,27 @@ router.post('/:id/cancel', requireRole('frontdesk', 'therapist', 'patient'), (re
 
 /* ---------- 到场核验并开始训练（治疗师） ---------- */
 router.post('/:id/checkin', requireRole('therapist'), (req, res) => {
-  const { vitals = {}, fit, confirms = {} } = req.body || {};
+  const { vitals = {}, fit, confirms = {}, handoverAck = false } = req.body || {};
   const a = getAppointmentRow(req.params.id);
   if (!a) return res.status(404).json({ error: '预约不存在' });
   if (!['arrived', 'scheduled'].includes(a.status)) return res.status(409).json({ error: '当前状态不可核验' });
   const patient = getPatient(a.patient_id);
+
+  // 疼痛升级交班：下一次训练不会只看预约状态——必须先阅读并知悉上一位治疗师的交班（中止原因/患者主诉/医生建议）
+  const pending = pendingEscalationOf(a.patient_id);
+  if (pending && !handoverAck) {
+    return res.status(400).json({
+      error: '该患者存在未交班知悉的疼痛升级事件，请先阅读交班记录（疼痛变化、患者主诉、中止原因、医生建议）并确认知悉后再开始训练',
+      code: 'HANDOVER_REQUIRED',
+      handover: {
+        id: pending.id,
+        painBefore: pending.pain_before, painPeak: pending.pain_peak, painChange: pending.pain_change,
+        patientWords: pending.patient_words, actionAngle: pending.action_angle,
+        doctorAdvice: pending.doctor_advice, nextIntensity: pending.next_intensity,
+        nextIntervalDays: pending.next_interval_days, createdAt: pending.created_at,
+      },
+    });
+  }
 
   // 高风险患者：训练前必须确认医嘱、家属知情、紧急联系人
   if (patient.riskLevel === '高') {
@@ -183,6 +202,8 @@ router.post('/:id/checkin', requireRole('therapist'), (req, res) => {
     return res.json({ ok: true, fit: false, issues });
   }
   db.prepare("UPDATE appointments SET status='in_progress', checkin=? WHERE id=?").run(JSON.stringify(checkin), a.id);
+  // 核验通过、正式开始训练：完成疼痛升级交班知悉闭环
+  if (pending) acknowledgeEscalation(pending.id, req.user, req.body?.handoverNote || '');
   return res.json({ ok: true, fit: true, issues });
 });
 
@@ -222,6 +243,13 @@ router.post('/:id/complete', requireRole('therapist'), (req, res) => {
   if (!a) return res.status(404).json({ error: '预约不存在' });
   if (a.status !== 'in_progress') return res.status(409).json({ error: '仅训练中可完成' });
   const patient = getPatient(a.patient_id);
+
+  // 疼痛升级交班闭环：本次训练正常完成，自动确认交班知悉（按降级建议执行且未再升级）
+  const stillEscalated = (J(a.session, {}) || {}).painEscalation;
+  const pendingBeforeComplete = pendingEscalationOf(a.patient_id);
+  if (pendingBeforeComplete && (!stillEscalated || stillEscalated.id !== pendingBeforeComplete.id)) {
+    acknowledgeEscalation(pendingBeforeComplete.id, req.user, '本次训练正常完成，已按疼痛升级后的降级强度执行');
+  }
 
   if (s) {
     const session = { ...(J(a.session, {}) || {}), ...s, updatedAt: nowIso(), by: req.user.name };

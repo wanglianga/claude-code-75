@@ -10,6 +10,7 @@ import patientRoutes from './routes/patients.js';
 import appointmentRoutes from './routes/appointments.js';
 import eventRoutes from './routes/events.js';
 import planRoutes from './routes/plans.js';
+import painRoutes from './routes/pain.js';
 import miscRoutes from './routes/misc.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +26,7 @@ app.use('/api/patients', patientRoutes);
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/plans', planRoutes);
+app.use('/api', painRoutes);
 app.use('/api', miscRoutes);
 
 // 生产模式：托管前端构建产物（SPA 回退）
